@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.data.synthetic import generate_candles
+from plugins.sources.simulated.series import generate_candles
 
 SEED = 1234
 

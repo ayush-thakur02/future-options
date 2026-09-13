@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.backtest import BacktestConfig, CostModel, run_backtest
-from niftypulse.backtest.costs import net_expectancy
-from niftypulse.ml.splits import purged_walk_forward
+from backtest import BacktestConfig, CostModel, run_backtest
+from backtest.costs import net_expectancy
+from ml.splits import purged_walk_forward
 
 # ------------------------------------------------------------------- splits
 

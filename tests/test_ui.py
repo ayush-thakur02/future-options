@@ -21,10 +21,10 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
-from niftypulse.core.calendar import IST
-from niftypulse.core.types import MarketSnapshot
-from niftypulse.data.synthetic import generate_candles
-from niftypulse.ui.charts import (
+from core.calendar import IST
+from core.types import MarketSnapshot
+from plugins.sources.simulated.series import generate_candles
+from ui.charts import (
     Grid,
     format_price,
     price_axis,
@@ -32,7 +32,7 @@ from niftypulse.ui.charts import (
     render_candles,
     sparkline,
 )
-from niftypulse.ui.dashboard import Dashboard
+from ui.dashboard import Dashboard
 
 
 @pytest.fixture(scope="module")

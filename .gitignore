@@ -1,7 +1,9 @@
-# Data and model artifacts
-data/
-artifacts/
-logs/
+# Data and model artifacts.
+# Anchored to the repository root on purpose: an unanchored "data/" also matched
+# src/niftypulse/data/, which silently kept the entire data layer out of git.
+/data/
+/artifacts/
+/logs/
 
 # Credentials — never commit these
 .env

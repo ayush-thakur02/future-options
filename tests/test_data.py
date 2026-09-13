@@ -8,12 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.core.calendar import IST, TradingCalendar
-from niftypulse.core.types import Direction, Tick
-from niftypulse.data.aggregator import CandleAggregator, bar_start
-from niftypulse.data.resample import resample_ohlcv
-from niftypulse.data.store import CandleStore, normalize_candles
-from niftypulse.data.synthetic import generate_candles
+from core.bars import normalize_candles
+from core.calendar import IST, TradingCalendar
+from core.types import Direction, Tick
+from plugins.aggregators.candle_builder import CandleAggregator, bar_start
+from plugins.sources.history import CandleStore
+from plugins.sources.history.resample import resample_ohlcv
+from plugins.sources.simulated.series import generate_candles
 
 
 def make_tick(minute: int, price: float, second: int = 0) -> Tick:

@@ -19,18 +19,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.core.settings import Settings
-from niftypulse.features import build_features, feature_columns
-from niftypulse.ml.calibration import ProbabilityCalibrator, expected_calibration_error
-from niftypulse.ml.dataset import (
+from core.settings import Settings
+from features import build_features, feature_columns
+from ml.calibration import ProbabilityCalibrator, expected_calibration_error
+from ml.dataset import (
     build_dataset,
     directional_labels,
     sample_weights,
     tradeable_fraction,
 )
-from niftypulse.ml.metrics import edge_by_confidence, evaluate, expected_move_curve
-from niftypulse.ml.models import DirectionEnsemble, build_models
-from niftypulse.ml.trainer import Trainer
+from ml.metrics import edge_by_confidence, evaluate, expected_move_curve
+from ml.models import DirectionEnsemble, build_models
+from ml.trainer import Trainer
 
 
 @pytest.fixture
@@ -447,7 +447,7 @@ def test_expected_move_curve_is_monotone() -> None:
     assert len(moves) >= 3
     assert moves == sorted(moves), "expected move must not decrease with conviction"
 
-    from niftypulse.ml.metrics import apply_expected_move_curve
+    from ml.metrics import apply_expected_move_curve
 
     assert apply_expected_move_curve(0.0, curve) <= apply_expected_move_curve(0.4, curve)
 
@@ -500,7 +500,7 @@ def test_trainer_saves_and_reloads(fast_settings) -> None:
     assert trainer.artifact_path(5).exists()
     assert trainer.oof_path(5).exists()
 
-    from niftypulse.ml.predictor import Predictor
+    from ml.predictor import Predictor
 
     predictor = Predictor(fast_settings).load()
     assert predictor.is_ready
@@ -523,7 +523,7 @@ def test_predictor_frame_is_vectorised(fast_settings) -> None:
     results = trainer.train_all(features, bars, columns)
     trainer.save(results)
 
-    from niftypulse.ml.predictor import Predictor
+    from ml.predictor import Predictor
 
     predictor = Predictor(fast_settings).load()
     series = predictor.predict_frame(features, 5)

@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from niftypulse.core.settings import Settings
-from niftypulse.kernel import (
+from core.settings import Settings
+from kernel import (
     DuplicatePlugin,
     EventBus,
     Kernel,
@@ -27,10 +27,10 @@ from niftypulse.kernel import (
     UnknownPlugin,
     parse_handle,
 )
-from niftypulse.kernel.context import PluginContext
-from niftypulse.kernel.errors import PluginLoadError
-from niftypulse.kernel.loader import PLUGIN_MODULE, load_module
-from niftypulse.kernel.registry import PluginEntry, Registry
+from kernel.context import PluginContext
+from kernel.errors import PluginLoadError
+from kernel.loader import PLUGIN_MODULE, load_module
+from kernel.registry import PluginEntry, Registry
 
 
 def manifest(name: str, kind: PluginKind = PluginKind.SOURCE, **kwargs) -> PluginManifest:
@@ -373,7 +373,7 @@ def test_context_is_what_a_builder_receives(kernel: Kernel) -> None:
 
 
 NESTED_PLUGIN = '''
-from niftypulse.kernel import PluginManifest
+from kernel import PluginManifest
 
 
 MANIFEST = PluginManifest(
@@ -429,7 +429,7 @@ def plugin_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 def test_discovery_walks_arbitrarily_nested_packages(plugin_tree: str) -> None:
     """Nesting is the point: a plugin can be a folder of modules, at any depth."""
-    from niftypulse.kernel.loader import discover
+    from kernel.loader import discover
 
     report = discover(plugin_tree)
     assert report.ok, report.errors
@@ -439,7 +439,7 @@ def test_discovery_walks_arbitrarily_nested_packages(plugin_tree: str) -> None:
 
 def test_third_party_looking_pack_composes_against_capabilities(plugin_tree: str) -> None:
     """A discovered pack wires up on declared capabilities alone."""
-    from niftypulse.kernel.loader import discover
+    from kernel.loader import discover
 
     kernel = Kernel(Settings())
     for found in discover(plugin_tree).entries:
@@ -469,7 +469,7 @@ def test_load_module_rejects_a_module_without_a_builder(tmp_path: Path,
     package.mkdir()
     (package / "__init__.py").touch()
     (package / f"{PLUGIN_MODULE}.py").write_text(
-        "from niftypulse.kernel import PluginManifest\n"
+        "from kernel import PluginManifest\n"
         "MANIFEST = PluginManifest(name='x', kind='source')\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -483,7 +483,7 @@ def test_load_module_rejects_a_module_without_a_builder(tmp_path: Path,
 def test_broken_plugin_is_reported_not_raised(tmp_path: Path,
                                               monkeypatch: pytest.MonkeyPatch) -> None:
     """One bad third-party pack must not stop the platform loading its own."""
-    from niftypulse.kernel.loader import discover
+    from kernel.loader import discover
 
     package = tmp_path / "brokenpack"
     package.mkdir()
@@ -515,7 +515,7 @@ def test_bundled_tree_loads_cleanly() -> None:
     in a release: the registry rejects a capability with two providers, so this
     test fails the moment two packs claim the same one.
     """
-    from niftypulse.kernel.loader import BUILTIN_PACKAGE, discover
+    from kernel.loader import BUILTIN_PACKAGE, discover
 
     report = discover(BUILTIN_PACKAGE)
     assert report.ok, report.errors
@@ -525,7 +525,7 @@ def test_bundled_tree_loads_cleanly() -> None:
 
 
 def test_bundled_tree_declares_only_known_kinds() -> None:
-    from niftypulse.kernel.loader import BUILTIN_PACKAGE, discover
+    from kernel.loader import BUILTIN_PACKAGE, discover
 
     for found in discover(BUILTIN_PACKAGE).entries:
         assert isinstance(found.manifest.kind, PluginKind)

@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.features import build_features, feature_columns
-from niftypulse.features import indicators as ta
+from features import build_features, feature_columns
+from features import indicators as ta
 
 
 def test_features_do_not_use_future_data(bars: pd.DataFrame) -> None:
@@ -62,7 +62,7 @@ def test_feature_columns_are_usable(bars: pd.DataFrame) -> None:
 
 def test_forward_return_alignment(bars: pd.DataFrame) -> None:
     """A dead-banded label must agree in sign with the actual forward return."""
-    from niftypulse.ml.dataset import directional_labels
+    from ml.dataset import directional_labels
 
     features = build_features(bars)
     labels, returns = directional_labels(bars, horizon=5, atr_norm=features["atr_norm"])
@@ -77,7 +77,7 @@ def test_forward_return_alignment(bars: pd.DataFrame) -> None:
 
 def test_labels_do_not_cross_sessions(bars: pd.DataFrame) -> None:
     """No label may span a session boundary."""
-    from niftypulse.ml.dataset import directional_labels, session_mask
+    from ml.dataset import directional_labels, session_mask
 
     features = build_features(bars)
     labels, _ = directional_labels(bars, horizon=15, atr_norm=features["atr_norm"])
