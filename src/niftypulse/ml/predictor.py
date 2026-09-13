@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..config import Settings
-from ..models import Direction, Prediction
-from ..trading_calendar import IST
+from ..core.calendar import IST
+from ..core.settings import Settings
+from ..core.types import Direction, Prediction
 from .metrics import apply_expected_move_curve
 from .trainer import load_artifact
 

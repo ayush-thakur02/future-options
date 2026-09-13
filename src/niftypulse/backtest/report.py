@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from ..models import Trade
+from ..core.types import Trade
 
 TRADING_DAYS_PER_YEAR = 250
 

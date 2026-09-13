@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from niftypulse.config import Settings
+from niftypulse.core.settings import Settings
 from niftypulse.features import build_features, feature_columns
 from niftypulse.ml.calibration import ProbabilityCalibrator, expected_calibration_error
 from niftypulse.ml.dataset import (

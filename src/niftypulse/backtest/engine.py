@@ -23,8 +23,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from ..models import Direction, Trade
-from ..trading_calendar import IST
+from ..core.calendar import IST
+from ..core.types import Direction, Trade
 from .costs import CostModel
 from .report import PerformanceReport, build_report
 

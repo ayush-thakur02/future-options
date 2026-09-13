@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ..trading_calendar import IST
+from ..core.calendar import IST
 
 
 @dataclass

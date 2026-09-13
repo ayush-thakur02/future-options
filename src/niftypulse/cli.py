@@ -12,7 +12,8 @@ from rich.table import Table
 
 from . import __version__
 from .backtest import BacktestConfig, CostModel, run_backtest, run_threshold_sweep
-from .config import load_settings
+from .core.calendar import TradingCalendar
+from .core.settings import load_settings
 from .data import MarketDataSource
 from .features import FEATURE_GROUPS, build_features, feature_columns
 from .live import LiveEngine
@@ -26,7 +27,6 @@ from .ml.trainer import (
 )
 from .strategies import build_strategy, default_ensemble
 from .strategies.base import StrategyContext
-from .trading_calendar import TradingCalendar
 
 app = typer.Typer(
     name="niftypulse",

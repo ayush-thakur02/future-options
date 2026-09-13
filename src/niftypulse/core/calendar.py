@@ -5,6 +5,10 @@ data-driven: rather than hard-coding a holiday list that silently rots, the
 calendar keys off weekends, session hours, and an optional user-maintained
 holiday file. In practice an absent bar simply never appears in the dataset,
 so backtests stay correct either way.
+
+The clock is deliberately injectable: the runtime passes a calendar rather than
+reading the wall clock directly, so a replay can be driven at any speed and the
+session logic still behaves.
 """
 
 from __future__ import annotations

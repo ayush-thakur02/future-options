@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..trading_calendar import IST, SESSION_CLOSE, SESSION_OPEN
+from ..core.calendar import IST, SESSION_CLOSE, SESSION_OPEN
 
 SESSION_LENGTH_MIN = (
     (SESSION_CLOSE.hour * 60 + SESSION_CLOSE.minute)

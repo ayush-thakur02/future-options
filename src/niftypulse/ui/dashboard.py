@@ -16,8 +16,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..models import MarketSnapshot
-from ..trading_calendar import IST
+from ..core.calendar import IST
+from ..core.types import MarketSnapshot
 from .charts import (
     arrow,
     change_style,

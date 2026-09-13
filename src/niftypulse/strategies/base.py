@@ -22,7 +22,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from ..models import Direction, Signal
+from ..core.types import Direction, Signal
 
 
 @dataclass

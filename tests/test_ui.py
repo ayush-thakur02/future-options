@@ -21,9 +21,9 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
+from niftypulse.core.calendar import IST
+from niftypulse.core.types import MarketSnapshot
 from niftypulse.data.synthetic import generate_candles
-from niftypulse.models import MarketSnapshot
-from niftypulse.trading_calendar import IST
 from niftypulse.ui.charts import (
     Grid,
     format_price,

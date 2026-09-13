@@ -28,8 +28,8 @@ from joblib import Parallel, delayed
 from rich.console import Console
 from rich.table import Table
 
-from ..config import Settings
-from ..trading_calendar import IST
+from ..core.calendar import IST
+from ..core.settings import Settings
 from .calibration import ProbabilityCalibrator, expected_calibration_error
 from .dataset import (
     Dataset,

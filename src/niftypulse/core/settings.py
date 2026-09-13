@@ -2,6 +2,10 @@
 
 Settings come from (in order of precedence): explicit arguments, environment
 variables, an optional YAML file at ``config/default.yaml``, then defaults.
+
+Part of ``core``: the vocabulary and configuration every plugin shares. Nothing
+here imports a plugin, which is what lets the plugin tree depend on ``core``
+without any risk of a cycle.
 """
 
 from __future__ import annotations
@@ -118,7 +122,7 @@ class Settings:
         model is only worth training if the moves it is asked to classify are
         larger than this too.
         """
-        from .backtest.costs import CostModel
+        from ..backtest.costs import CostModel
 
         return CostModel(slippage_bps=self.slippage_bps).round_trip_bps(self.reference_notional)
 

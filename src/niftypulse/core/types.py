@@ -1,4 +1,12 @@
-"""Core domain types shared across the platform."""
+"""Core domain types shared across the platform.
+
+These are the nouns every plugin agrees on. A source produces ``Tick``s, an
+aggregator turns them into bars, a strategy emits a ``Signal``, a forecaster a
+``Prediction`` and a ``ForecastCandle``, and a renderer draws a
+``MarketSnapshot``. Because the vocabulary lives here rather than in any plugin,
+plugins can be added, replaced, or removed without a single change to the types
+they exchange.
+"""
 
 from __future__ import annotations
 
@@ -129,6 +137,55 @@ class Prediction:
         return abs(self.expected_move_bps) - self.hurdle_bps
 
 
+@dataclass(slots=True)
+class ForecastCandle:
+    """A projected OHLC bar sitting after the forming one.
+
+    Not a prediction of a specific price path — an estimate of where the next
+    few bars are likely to travel, given current conviction and volatility. It is
+    rebuilt continuously from the live price, so a projected candle moves as the
+    market moves underneath it rather than being fixed at the moment it was made.
+
+    ``horizon`` counts bars ahead: 1 is the bar that closes next.
+    """
+
+    ts: datetime
+    horizon: int
+    open: float
+    high: float
+    low: float
+    close: float
+    conviction: float = 0.0
+    confidence: float = 0.0
+    expected_move_bps: float = 0.0
+    bar_minutes: int = 1
+
+    @property
+    def direction(self) -> Direction:
+        return Direction.from_value(self.close - self.open)
+
+    @property
+    def is_up(self) -> bool:
+        return self.close >= self.open
+
+    @property
+    def change_bps(self) -> float:
+        if not self.open:
+            return 0.0
+        return (self.close / self.open - 1.0) * 10_000
+
+    def as_row(self) -> dict:
+        """The bar as a row of the OHLCV schema, for charting."""
+        return {
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": 0.0,
+            "oi": 0.0,
+        }
+
+
 @dataclass
 class MarketSnapshot:
     """Everything the UI needs to render one frame."""
@@ -142,6 +199,10 @@ class MarketSnapshot:
     predictions: list[Prediction] = field(default_factory=list)
     regime: str = "unknown"
     indicators: dict = field(default_factory=dict)
+    projections: list[ForecastCandle] = field(default_factory=list)
+    conviction: float = 0.0
+    projection_ts: datetime | None = None
+    projection_error_bps: float = 0.0
 
     @property
     def change(self) -> float:
