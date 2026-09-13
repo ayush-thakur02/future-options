@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .base import Strategy, StrategyContext, squash
+from ..base import Strategy, StrategyContext, squash
 
 
 def _trend_dampener(features: pd.DataFrame, ceiling: float = 45.0, floor: float = 0.25) -> pd.Series:
@@ -148,3 +148,19 @@ class RangeFadeStrategy(Strategy):
     def describe(self, value: float, context: StrategyContext) -> str:
         position = context.features["day_range_position"].iloc[-1]
         return f"At {position:.0%} of the day's range"
+
+
+# The classes this package publishes, in one place: the plugin manifest derives
+# its provided capabilities from this tuple, so a strategy cannot exist in code
+# without being advertised to the kernel.
+
+# The classes this pack publishes, in one place. The plugin manifest derives its
+# provided capabilities from this tuple, so a strategy cannot exist in code without
+# being advertised to the kernel — and cannot be advertised without existing.
+STRATEGIES = (
+    RsiReversionStrategy,
+    BollingerReversionStrategy,
+    VwapReversionStrategy,
+    ZScoreReversionStrategy,
+    RangeFadeStrategy,
+)

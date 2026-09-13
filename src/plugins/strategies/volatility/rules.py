@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .base import Strategy, StrategyContext, squash
+from ..base import Strategy, StrategyContext, squash
 
 
 class SqueezeReleaseStrategy(Strategy):
@@ -127,3 +127,18 @@ class GarchVolForecastStrategy(Strategy):
     def describe(self, value: float, context: StrategyContext) -> str:
         ratio = context.features["vol_ratio_10_60"].iloc[-1]
         return f"Vol regime {ratio:.2f}x, trend {'up' if value > 0 else 'down'}"
+
+
+# The classes this package publishes, in one place: the plugin manifest derives
+# its provided capabilities from this tuple, so a strategy cannot exist in code
+# without being advertised to the kernel.
+
+# The classes this pack publishes, in one place. The plugin manifest derives its
+# provided capabilities from this tuple, so a strategy cannot exist in code without
+# being advertised to the kernel — and cannot be advertised without existing.
+STRATEGIES = (
+    SqueezeReleaseStrategy,
+    VolatilityBreakoutStrategy,
+    VolatilityMeanReversionStrategy,
+    GarchVolForecastStrategy,
+)

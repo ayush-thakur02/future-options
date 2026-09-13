@@ -23,17 +23,17 @@ import pandas as pd
 
 from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
-from core.settings import Settings
 from core.types import MarketSnapshot, Prediction, Signal, Tick
-from plugins.aggregators.candle_builder import CandleAggregator
-from plugins.features.technical import build_features
-from plugins.features.technical.session import classify_regime
-from strategies import CompositeStrategy, StrategyContext, build_strategy, default_ensemble
+from kernel import Kernel
+from plugins.strategies import CompositeStrategy, StrategyCatalog, StrategyContext
 
 FEATURE_WINDOW = 2000
 # Bars handed to the strategy layer. Strategies look back at most ~100 bars, so
-# evaluating all 24 of them across the full feature window is wasted work.
+# evaluating all of them across the full feature window is wasted work.
 SIGNAL_WINDOW = 600
+# Named in the signal panel. More than a handful is unreadable, and these are the
+# ones whose disagreement with the ensemble is worth seeing.
+HIGHLIGHTED = ("ema_trend", "supertrend", "macd_momentum", "rsi_reversion", "vwap_reversion", "squeeze_release")
 
 
 class LiveEngine:
@@ -41,23 +41,30 @@ class LiveEngine:
 
     def __init__(
         self,
-        settings: Settings,
-        predictor=None,
+        kernel: Kernel,
         strategy: CompositeStrategy | None = None,
         bar_minutes: int | None = None,
         calendar: TradingCalendar | None = None,
         feature_window: int = FEATURE_WINDOW,
         signal_window: int = SIGNAL_WINDOW,
     ) -> None:
-        self.settings = settings
-        self.predictor = predictor
-        self.strategy = strategy or default_ensemble()
-        self.bar_minutes = bar_minutes or settings.bar_minutes
+        self.kernel = kernel
+        self.settings = kernel.settings
+        self.bar_minutes = bar_minutes or kernel.settings.bar_minutes
         self.calendar = calendar or TradingCalendar()
         self.feature_window = feature_window
         self.signal_window = signal_window
 
-        self.aggregator = CandleAggregator(bar_minutes=self.bar_minutes)
+        # Everything below arrives through a capability rather than an import, so
+        # any of the three can be swapped by changing which plugin is registered.
+        self.pipeline = kernel.capability("features")
+        self.broker = kernel.build("source:upstox")
+        self.predictor = kernel.capability("forecast") if kernel.registry.capabilities().get("forecast") else None
+        self.catalog = StrategyCatalog.from_kernel(kernel)
+        self.strategy = strategy or self.catalog.ensemble()
+        self.aggregator = kernel.build(
+            "aggregator:candle_builder", bar_minutes=self.bar_minutes
+        )
         self.history: pd.DataFrame = pd.DataFrame()
         self.features: pd.DataFrame = pd.DataFrame()
         self.signals: list[Signal] = []
@@ -126,11 +133,7 @@ class LiveEngine:
             return
 
         try:
-            self.features = build_features(
-                self.history,
-                bar_minutes=self.bar_minutes,
-                expiry_weekday=self.settings.expiry_weekday,
-            )
+            self.features = self.pipeline.build(self.history, bar_minutes=self.bar_minutes)
         except Exception as exc:  # noqa: BLE001
             self.status = f"feature error: {exc}"
             return
@@ -165,9 +168,9 @@ class LiveEngine:
         except Exception:
             pass
 
-        for name in ("ema_trend", "supertrend", "macd_momentum", "rsi_reversion", "vwap_reversion", "squeeze_release"):
+        for name in HIGHLIGHTED:
             try:
-                signal = build_strategy(name)._latest_signal(context, threshold=0.15)
+                signal = self.catalog.get(name)._latest_signal(context, threshold=0.15)
                 if signal is not None:
                     signals.append(signal)
             except Exception:
@@ -186,7 +189,7 @@ class LiveEngine:
         if self.features.empty:
             return "unknown"
         try:
-            labels = classify_regime(self.features, window=100)
+            labels = self.pipeline.regime(self.features, window=100)
             value = labels.dropna()
             return str(value.iloc[-1]) if len(value) else "unknown"
         except Exception:
@@ -236,20 +239,12 @@ class LiveEngine:
 
     # ----------------------------------------------------------------- feeds
 
-    async def run_live(self, access_token: str | None = None, instrument_keys: list[str] | None = None) -> None:
-        """Stream from the Upstox WebSocket until interrupted."""
-        from plugins.sources.upstox import UpstoxFeed
-
-        token = access_token or self.settings.credentials.access_token
-        if not token:
-            raise RuntimeError("live feed requires an Upstox access token; run `niftypulse login`")
-
-        feed = UpstoxFeed(
-            access_token=token,
-            instrument_keys=instrument_keys or [self.settings.instrument_key],
+    async def run_live(self, instrument_keys: list[str] | None = None) -> None:
+        """Stream from the broker's feed until interrupted."""
+        feed = self.broker.feed(
             on_tick=self.on_tick,
             on_status=self._on_feed_status,
-            mode="full",
+            instrument_keys=instrument_keys,
         )
         self.status = "connecting"
         await feed.run()

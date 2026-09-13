@@ -21,7 +21,6 @@ from core.version import __version__
 from kernel import BUILTIN_PACKAGE, Kernel
 from live import LiveEngine
 from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
-from plugins.forecasts.ml_ensemble.predictor import Predictor
 from plugins.forecasts.ml_ensemble.trainer import (
     Trainer,
     list_artifacts,
@@ -29,9 +28,8 @@ from plugins.forecasts.ml_ensemble.trainer import (
     render_scalping_hurdle,
     save_training_metadata,
 )
+from plugins.strategies import StrategyCatalog, StrategyContext
 from runtime.bars import BarLoader
-from strategies import build_strategy, default_ensemble
-from strategies.base import StrategyContext
 
 app = typer.Typer(
     name="niftypulse",
@@ -295,8 +293,9 @@ def _resolve_scores(strategy: str, settings, bars, horizon: int):
 
     features = build_features(bars, bar_minutes=settings.bar_minutes, expiry_weekday=settings.expiry_weekday)
     context = StrategyContext(bars=bars, features=features)
+    catalog = StrategyCatalog.from_kernel(_kernel())
     try:
-        instance = build_strategy(strategy)
+        instance = catalog.get(strategy)
     except KeyError as exc:
         console.print(f"[red]{exc}[/]")
         return None, strategy
@@ -319,20 +318,13 @@ def dashboard(
     settings.bar_minutes = timeframe
     kernel = Kernel.bootstrap(settings)
 
-    calendar = TradingCalendar()
-    predictor = Predictor(settings).load()
-    if predictor.is_ready:
+    engine = LiveEngine(kernel, bar_minutes=timeframe, calendar=TradingCalendar())
+
+    predictor = engine.predictor
+    if predictor is not None and predictor.is_ready:
         console.print(f"[dim]models loaded: {predictor.describe()}[/]")
     else:
         console.print("[yellow]no trained models — forecasts disabled. Run `niftypulse train`.[/]")
-
-    engine = LiveEngine(
-        settings,
-        predictor=predictor,
-        strategy=default_ensemble(),
-        bar_minutes=timeframe,
-        calendar=calendar,
-    )
 
     broker = kernel.build("source:upstox")
     if offline or not broker.is_configured:
@@ -398,27 +390,33 @@ async def _live_loop(engine, dash, refresh: float) -> None:
 def strategies() -> None:
     """List every available strategy."""
     settings = _settings()
-    bars = _bars(offline=True, days=20, refresh=False, quiet=True)
+    kernel = _kernel()
+    bars = BarLoader(kernel).load(days=20, refresh=False, quiet=True, offline=True)
 
     features = build_features(bars, bar_minutes=settings.bar_minutes)
     context = StrategyContext(bars=bars, features=features)
 
+    catalog = StrategyCatalog.from_kernel(kernel)
+
     table = Table(title="Strategies", header_style="bold cyan")
-    for column in ("name", "category", "fires", "description"):
+    for column in ("name", "pack", "category", "fires", "description"):
         table.add_column(column)
 
-    from strategies import all_strategies
-
-    for instance in all_strategies():
+    for instance in catalog.all():
         scores = instance.score(context)
         fires = (scores.abs() > 0.15).mean() * 100
+        pack = catalog.pack_of(instance.name)
         table.add_row(
             instance.name,
+            pack.name if pack else "—",
             instance.category,
             f"{fires:.1f}%",
             instance.description,
         )
     console.print(table)
+
+    for handle, reason in catalog.skipped.items():
+        console.print(f"[yellow]skipped[/] {handle}: {reason}")
     console.print("[dim]'fires' is the share of bars with conviction above the entry threshold.[/]")
 
 

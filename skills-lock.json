@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "upstox": {
+      "source": "upstox/upstox-skills",
+      "sourceType": "github",
+      "skillPath": "skills/upstox/SKILL.md",
+      "computedHash": "152d368688384af6a18126247d6be7b5b34a1510f177834639c21c146f03d5d3"
+    }
+  }
+}

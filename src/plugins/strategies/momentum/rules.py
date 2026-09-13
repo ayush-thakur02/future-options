@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .base import Strategy, StrategyContext, squash
+from ..base import Strategy, StrategyContext, squash
 
 
 class MacdMomentumStrategy(Strategy):
@@ -132,3 +132,19 @@ class OrderFlowImbalanceStrategy(Strategy):
 
     def describe(self, value: float, context: StrategyContext) -> str:
         return f"Order flow {'bid' if value > 0 else 'ask'} heavy"
+
+
+# The classes this package publishes, in one place: the plugin manifest derives
+# its provided capabilities from this tuple, so a strategy cannot exist in code
+# without being advertised to the kernel.
+
+# The classes this pack publishes, in one place. The plugin manifest derives its
+# provided capabilities from this tuple, so a strategy cannot exist in code without
+# being advertised to the kernel — and cannot be advertised without existing.
+STRATEGIES = (
+    MacdMomentumStrategy,
+    RocMomentumStrategy,
+    StochasticReversalStrategy,
+    ActivitySpikeStrategy,
+    OrderFlowImbalanceStrategy,
+)

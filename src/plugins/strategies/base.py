@@ -72,6 +72,35 @@ class Strategy(ABC):
         return f"<{type(self).__name__} name={self.name!r}>"
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyPack:
+    """A bundle of related strategies — what a strategy plugin's build returns.
+
+    A pack is the unit of installation: it is what a plugin folder publishes, and
+    what the catalog iterates. Grouping by family (trend, reversion) rather than
+    one plugin per rule keeps the tree readable while still letting any single
+    rule be named and resolved on its own.
+    """
+
+    name: str
+    category: str
+    instances: tuple[Strategy, ...]
+    description: str = ""
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(strategy.name for strategy in self.instances)
+
+    def get(self, name: str) -> Strategy:
+        for strategy in self.instances:
+            if strategy.name == name:
+                return strategy
+        raise KeyError(f"{self.name} does not offer {name!r}; it offers {', '.join(self.names)}")
+
+    def __len__(self) -> int:
+        return len(self.instances)
+
+
 def _last_timestamp(index: pd.Index) -> datetime:
     stamp = index[-1]
     return stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else datetime.now()
