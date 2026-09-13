@@ -20,15 +20,15 @@ from core.settings import Settings, load_settings
 from core.version import __version__
 from kernel import BUILTIN_PACKAGE, Kernel
 from live import LiveEngine
-from ml.predictor import Predictor
-from ml.trainer import (
+from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
+from plugins.forecasts.ml_ensemble.predictor import Predictor
+from plugins.forecasts.ml_ensemble.trainer import (
     Trainer,
     list_artifacts,
     render_report,
     render_scalping_hurdle,
     save_training_metadata,
 )
-from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
 from runtime.bars import BarLoader
 from strategies import build_strategy, default_ensemble
 from strategies.base import StrategyContext
@@ -492,7 +492,7 @@ def doctor() -> None:
 
     rows.append(("python", sys.version.split()[0], "ok"))
 
-    from ml.models import lightgbm_available
+    from plugins.forecasts.ml_ensemble.models import lightgbm_available
 
     rows.append(
         (

@@ -12,7 +12,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
-from ml.metrics import apply_expected_move_curve
+from plugins.forecasts.ml_ensemble.metrics import apply_expected_move_curve
 
 from .base import CompositeStrategy, Strategy, StrategyContext, squash
 

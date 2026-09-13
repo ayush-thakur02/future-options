@@ -8,7 +8,7 @@ import pytest
 
 from backtest import BacktestConfig, CostModel, run_backtest
 from backtest.costs import net_expectancy
-from ml.splits import purged_walk_forward
+from plugins.forecasts.ml_ensemble.splits import purged_walk_forward
 
 # ------------------------------------------------------------------- splits
 
