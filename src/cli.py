@@ -18,7 +18,6 @@ from backtest import BacktestConfig, CostModel, run_backtest, run_threshold_swee
 from core.calendar import TradingCalendar
 from core.settings import Settings, load_settings
 from core.version import __version__
-from features import FEATURE_GROUPS, build_features, feature_columns
 from kernel import BUILTIN_PACKAGE, Kernel
 from live import LiveEngine
 from ml.predictor import Predictor
@@ -29,6 +28,7 @@ from ml.trainer import (
     render_scalping_hurdle,
     save_training_metadata,
 )
+from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
 from runtime.bars import BarLoader
 from strategies import build_strategy, default_ensemble
 from strategies.base import StrategyContext

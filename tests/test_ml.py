@@ -20,7 +20,6 @@ import pandas as pd
 import pytest
 
 from core.settings import Settings
-from features import build_features, feature_columns
 from ml.calibration import ProbabilityCalibrator, expected_calibration_error
 from ml.dataset import (
     build_dataset,
@@ -31,6 +30,7 @@ from ml.dataset import (
 from ml.metrics import edge_by_confidence, evaluate, expected_move_curve
 from ml.models import DirectionEnsemble, build_models
 from ml.trainer import Trainer
+from plugins.features.technical import build_features, feature_columns
 
 
 @pytest.fixture

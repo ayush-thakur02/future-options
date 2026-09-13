@@ -25,9 +25,9 @@ from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
 from core.settings import Settings
 from core.types import MarketSnapshot, Prediction, Signal, Tick
-from features import build_features
-from features.context import classify_regime
 from plugins.aggregators.candle_builder import CandleAggregator
+from plugins.features.technical import build_features
+from plugins.features.technical.session import classify_regime
 from strategies import CompositeStrategy, StrategyContext, build_strategy, default_ensemble
 
 FEATURE_WINDOW = 2000

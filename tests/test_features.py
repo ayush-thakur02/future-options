@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from features import build_features, feature_columns
-from features import indicators as ta
+from plugins.features.technical import build_features, feature_columns
+from plugins.features.technical import indicators as ta
 
 
 def test_features_do_not_use_future_data(bars: pd.DataFrame) -> None:

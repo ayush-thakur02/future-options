@@ -21,11 +21,13 @@ slower.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
 from . import indicators as ta
-from .context import classify_regime, overnight_features, session_features
+from .session import classify_regime, overnight_features, session_features
 
 RETURN_LAGS = (1, 2, 3, 5, 10, 15, 30, 60)
 VOL_WINDOWS = (10, 20, 60)
@@ -344,3 +346,40 @@ def feature_columns(matrix: pd.DataFrame) -> list[str]:
 
 def regime_labels(matrix: pd.DataFrame, window: int = 100) -> pd.Series:
     return classify_regime(matrix, atr_col="atr_norm", window=window)
+
+
+@dataclass(slots=True)
+class FeaturePipeline:
+    """The feature layer as an object the runtime holds.
+
+    ``build_features`` stays a plain function — training, backtesting, and tests
+    all call it directly and should keep doing so. This wrapper exists so the
+    live engine can depend on the ``features`` capability and receive one object
+    instead of importing the pack's modules, which is what lets the whole feature
+    set be replaced without touching the engine.
+    """
+
+    expiry_weekday: int = 1
+    include_context: bool = True
+
+    def build(self, bars: pd.DataFrame, bar_minutes: int = 1) -> pd.DataFrame:
+        return build_features(
+            bars,
+            bar_minutes=bar_minutes,
+            expiry_weekday=self.expiry_weekday,
+            include_context=self.include_context,
+        )
+
+    def columns(self, matrix: pd.DataFrame) -> list[str]:
+        return feature_columns(matrix)
+
+    def regime(self, matrix: pd.DataFrame, window: int = 100) -> pd.Series:
+        return classify_regime(matrix, window=window)
+
+    @property
+    def groups(self) -> dict[str, list[str]]:
+        return FEATURE_GROUPS
+
+    def __repr__(self) -> str:
+        return f"<FeaturePipeline expiry_weekday={self.expiry_weekday}>"
+
