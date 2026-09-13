@@ -449,3 +449,62 @@ def test_normalize_frames_sorts_and_dedupes() -> None:
     assert len(out) == 2
     assert out.index.is_monotonic_increasing
     assert out["ltp"].iloc[0] == pytest.approx(9.0), "the last write must win"
+
+
+# ------------------------------------------------------ manifest consistency
+
+
+def test_two_stores_over_one_file_see_each_other_s_writes(tmp_path) -> None:
+    """An in-process manifest cache with no invalidation made them disagree.
+
+    Two stores over one dataset is not hypothetical: a session's recorder and a
+    `sync` run can both hold one, and the one that read first would report rows
+    the other had already replaced.
+    """
+    first = PartitionedStore(tmp_path, "NIFTY")
+    second = PartitionedStore(tmp_path, "NIFTY")
+
+    first.write(day_frame("2026-03-10"))
+    assert second.row_count() == 5, "the second store must see the first's write"
+
+    second.write(day_frame("2026-03-11"))
+    assert first.row_count() == 10
+
+
+def test_replace_removes_the_old_partitions_from_the_manifest(tmp_path, bars) -> None:
+    store = PartitionedStore(tmp_path, "NIFTY")
+    store.write(bars)
+    assert store.sessions() == 4
+
+    store.replace(bars.tail(50))
+    assert store.row_count() == 50
+    assert store.sessions() == 1
+    assert len(store.partitions()) == 1
+
+
+def test_pruning_a_partition_is_noticed(tmp_path) -> None:
+    """Pruning old tape is a documented way to bound the store, so the counts follow."""
+    store = PartitionedStore(tmp_path, "NIFTY")
+    store.write(day_frame("2026-03-10"))
+    store.write(day_frame("2026-03-11"))
+    assert store.row_count() == 10
+
+    sorted(store.partitions())[0].unlink()
+    store.write(day_frame("2026-03-12"))
+
+    assert store.sessions() == 2
+    assert store.row_count() == 10
+    assert store.coverage()[0] >= pd.Timestamp("2026-03-11").tz_localize(IST)
+
+
+def test_an_incremental_write_keeps_untouched_shards(tmp_path) -> None:
+    """Per-shard bookkeeping must not drop shards it was not told about."""
+    store = PartitionedStore(tmp_path, "NIFTY")
+    for day in ("2026-03-10", "2026-03-11", "2026-03-12"):
+        store.write(day_frame(day))
+
+    store.write(day_frame("2026-03-11", price=25_000.0))
+
+    assert store.sessions() == 3
+    assert store.row_count() == 15
+    assert store.load()["close"].max() == pytest.approx(25_000.0)

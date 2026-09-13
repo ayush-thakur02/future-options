@@ -73,8 +73,6 @@ class HistorySource:
 
     def load_cached(self) -> pd.DataFrame:
         """Everything in the store. Empty if the store does not exist yet."""
-        if not self.store.exists():
-            return self.store.load()
         return self.store.load()
 
     def load_history(
@@ -94,7 +92,7 @@ class HistorySource:
         cached = self.load_cached()
         if self.offline or not self.access_token:
             if not cached.empty and not quiet:
-                print(f"Using {len(cached):,} cached bars from {self.store.path}")
+                print(f"Using {len(cached):,} cached bars from {self.store.base}")
             return cached
 
         if not refresh and not cached.empty:
@@ -119,7 +117,11 @@ class HistorySource:
 
     def _load_and_refresh(self, cached: pd.DataFrame, days: int, quiet: bool) -> pd.DataFrame:
         now = pd.Timestamp.now(tz=IST)
-        target_start = (now - pd.Timedelta(days=days)).normalize()
+        # A plain date, not a Timestamp: it is compared against `now.date()` and
+        # subtracted from it below, and `max()` of a date and a tz-aware Timestamp
+        # raises rather than coercing. Keeping one type throughout is what makes
+        # the fetch path work at all — it did not, before this.
+        target_start = (now - pd.Timedelta(days=days)).normalize().date()
 
         if cached.empty:
             fetch_start = target_start

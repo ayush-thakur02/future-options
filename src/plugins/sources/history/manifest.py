@@ -29,12 +29,22 @@ class StoreManifest:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._cache: dict | None = None
+        self._stamp: tuple[int, int] | None = None
 
     # ------------------------------------------------------------------ read
 
     def read(self) -> dict:
-        if self._cache is not None:
+        """The current contents, re-read when the file has changed underneath.
+
+        The stamp matters because more than one store can hold the same manifest
+        path — a session's recorder and a `sync` run, say, or two sources over one
+        dataset — and an in-process cache with no invalidation makes them disagree
+        about what is on disk. One ``stat`` per read is a cheap price for that.
+        """
+        stamp = self._file_stamp()
+        if self._cache is not None and stamp == self._stamp:
             return self._cache
+        self._stamp = stamp
         payload: dict[str, Any] = {"version": MANIFEST_VERSION, "datasets": {}}
         if self.path.exists():
             try:
@@ -85,6 +95,14 @@ class StoreManifest:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
         self._cache = payload
+        self._stamp = self._file_stamp()
+
+    def _file_stamp(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     def describe(self) -> str:
         payload = self.read()

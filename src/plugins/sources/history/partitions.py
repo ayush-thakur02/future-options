@@ -233,23 +233,26 @@ class PartitionedStore:
 
         incoming = self.normalizer(frame)
         written = 0
+        touched: list[Path] = []
         for _, shard_frame in incoming.groupby(self._shard_series(incoming)):
             path = self.path_for(shard_frame.index[0])
             merged = _merge_partition(path, shard_frame)
             _write_partition(path, merged, self.compression)
+            touched.append(path)
             written += len(shard_frame)
 
-        self._refresh_manifest()
+        self._update_manifest(touched)
         return written
 
     def replace(self, frame: pd.DataFrame) -> None:
         """Rebuild the store from ``frame``, removing anything it does not contain."""
         for path in self.partitions():
             path.unlink()
+        # Forgetting first matters: an incremental update starts from what the
+        # manifest already lists, and everything it listed has just been deleted.
+        self.manifest.forget(self.dataset, self.key)
         if frame is not None and not frame.empty:
             self.write(frame)
-        else:
-            self._refresh_manifest()
 
     def _shard_series(self, frame: pd.DataFrame) -> pd.Series:
         """The partition each row belongs to, as a groupby key."""
@@ -260,33 +263,57 @@ class PartitionedStore:
             keys = [str(day) for day in stamps.date]
         return pd.Series(keys, index=frame.index)
 
-    def _refresh_manifest(self) -> None:
-        files = self.partitions()
-        if not files:
+    def _update_manifest(self, touched: list[Path]) -> None:
+        """Refresh the totals for the shards just written, and only those.
+
+        The naive version — rescan every partition after every write — is correct
+        and unusable: the tick recorder flushes every few seconds during a session,
+        and re-reading a day of tape each time to recount rows is work with no
+        purpose. Per-shard counts are kept instead, so a write costs one re-read of
+        the shard it touched and the totals are summed from the index.
+        """
+        entry = dict(self.manifest.dataset(self.dataset, self.key))
+        shards: dict[str, dict] = dict(entry.get("shards") or {})
+
+        # Drop anything whose file is gone. Partitions can be deleted outside the
+        # store — the docs suggest pruning old tape to bound the size — and a
+        # manifest that kept counting them would report rows that are not there.
+        for key in [name for name in shards if not (self.base / name).exists()]:
+            shards.pop(key)
+
+        for path in touched:
+            stats = _shard_stats(path)
+            if stats is None:
+                shards.pop(self._shard_key(path), None)
+            else:
+                shards[self._shard_key(path)] = stats
+
+        if not shards:
             self.manifest.forget(self.dataset, self.key)
             return
-        first: pd.Timestamp | None = None
-        last: pd.Timestamp | None = None
-        rows = 0
-        for path in files:
-            frame = pd.read_parquet(path)
-            if frame.empty:
-                continue
-            stamps = index_stamps(_as_ist(frame.index))
-            rows += len(stamps)
-            first = stamps[0] if first is None or stamps[0] < first else first
-            last = stamps[-1] if last is None or stamps[-1] > last else last
 
+        rows = sum(int(shard["rows"]) for shard in shards.values())
+        firsts = [shard["first"] for shard in shards.values() if shard.get("first")]
+        lasts = [shard["last"] for shard in shards.values() if shard.get("last")]
         self.manifest.update(
             self.dataset,
             self.key,
             rows=rows,
-            sessions=len(files),
-            first=first.isoformat() if first is not None else None,
-            last=last.isoformat() if last is not None else None,
+            sessions=len(shards),
+            first=min(firsts) if firsts else None,
+            last=max(lasts) if lasts else None,
+            shards=shards,
             instrument=self.instrument,
             bar_minutes=self.bar_minutes,
         )
+
+    def _refresh_manifest(self) -> None:
+        """Recompute everything from the files. Used after a wholesale replace."""
+        self._update_manifest(self.partitions())
+
+    def _shard_key(self, path: Path) -> str:
+        relative = path.relative_to(self.base)
+        return relative.as_posix()
 
     # -------------------------------------------------------------- migration
 
@@ -325,6 +352,21 @@ class PartitionedStore:
 
     def __repr__(self) -> str:
         return f"<PartitionedStore {self.dataset} {self.key} at {self.base}>"
+
+
+def _shard_stats(path: Path) -> dict | None:
+    """Rows and coverage for one shard file, or None if it holds nothing."""
+    if not path.exists():
+        return None
+    frame = pd.read_parquet(path)
+    if frame.empty:
+        return None
+    stamps = index_stamps(_as_ist(frame.index))
+    return {
+        "rows": len(stamps),
+        "first": stamps[0].isoformat(),
+        "last": stamps[-1].isoformat(),
+    }
 
 
 def _merge_partition(path: Path, incoming: pd.DataFrame) -> pd.DataFrame:
