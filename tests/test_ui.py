@@ -1,14 +1,17 @@
-"""Tests for the terminal UI.
+"""Tests for the terminal renderer.
 
-Two failures motivated these, both of which rendered as "the chart looks broken"
-and neither of which any non-visual test would have caught.
+Three failures motivated these, all of which rendered as "the chart looks broken"
+and none of which a non-visual test would have caught.
 
-1. ``_render_row`` right-stripped each style run, which deleted the leading blank
+1. ``render_row`` right-stripped each style run, which deleted the leading blank
    run that right-aligns the chart. Every candle jumped to the left edge.
 2. The assembled row was three characters wider than the panel interior, so Rich
    wrapped the price axis onto the following line, printing it over the candles.
+3. The projected bars have to join the *same* price scale as the printed ones.
+   Drawn on their own scale they would look plausible regardless of what they
+   said, which is the one thing a projection must never do.
 
-The second is the important one to guard: an off-by-N in width arithmetic is
+The width guard is the important one: an off-by-N in width arithmetic is
 invisible in unit tests of the chart alone and only shows up in a full render.
 """
 
@@ -22,17 +25,17 @@ from rich.console import Console
 from rich.text import Text
 
 from core.calendar import IST
-from core.types import MarketSnapshot
-from plugins.sources.simulated.series import generate_candles
-from ui.charts import (
-    Grid,
+from core.types import ForecastCandle, MarketSnapshot
+from plugins.forecasts.projection import project_candles
+from plugins.renderers.terminal import TerminalRenderer, render_candles
+from plugins.renderers.terminal.canvas import Grid
+from plugins.renderers.terminal.widgets import (
     format_price,
     price_axis,
     probability_bar,
-    render_candles,
     sparkline,
 )
-from ui.dashboard import Dashboard
+from plugins.sources.simulated.series import generate_candles
 
 
 @pytest.fixture(scope="module")
@@ -207,15 +210,25 @@ def snapshot(bars) -> MarketSnapshot:
     )
 
 
-def render_lines(bars, width: int, height: int, status: str = "test") -> list[str]:
+def render_lines(
+    bars,
+    width: int,
+    height: int,
+    status: str = "test",
+    projections: list[ForecastCandle] | None = None,
+) -> list[str]:
     import io
 
-    dash = Dashboard(symbol="NIFTY 50", timeframe="1m")
+    frame = snapshot(bars)
+    if projections:
+        frame.projections = projections
+
+    dash = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
     dash.console = Console(width=width, height=height)
 
     buffer = io.StringIO()
     console = Console(width=width, height=height, file=buffer, force_terminal=False)
-    console.print(dash.build(snapshot(bars), status))
+    console.print(dash.build(frame, status))
     return buffer.getvalue().splitlines()
 
 
@@ -274,7 +287,7 @@ def test_dashboard_renders_without_models(bars) -> None:
     """The no-model path must render, not raise."""
     import io
 
-    dash = Dashboard(symbol="NIFTY 50", timeframe="1m")
+    dash = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
     dash.console = Console(width=110, height=36)
     buffer = io.StringIO()
     Console(width=110, height=36, file=buffer, force_terminal=False).print(
@@ -286,7 +299,7 @@ def test_dashboard_renders_without_models(bars) -> None:
 def test_dashboard_renders_with_empty_candles() -> None:
     import io
 
-    dash = Dashboard(symbol="NIFTY 50", timeframe="1m")
+    dash = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
     dash.console = Console(width=110, height=36)
     empty = MarketSnapshot(
         ts=datetime.now(IST),
@@ -300,3 +313,137 @@ def test_dashboard_renders_with_empty_candles() -> None:
         dash.build(empty, "starting")
     )
     assert "waiting for bars" in buffer.getvalue()
+
+
+# -------------------------------------------------------------- projections
+
+
+def projections_for(bars, conviction: float = 0.7) -> list[ForecastCandle]:
+    anchor = float(bars["close"].iloc[-1])
+    now = bars.index[-1].to_pydatetime()
+    return project_candles(bars, anchor=anchor, conviction=conviction, now=now, bars_ahead=3)
+
+
+def test_projected_candles_are_drawn_in_blue(bars) -> None:
+    """Blue is reserved for projected bars; green and red stay for printed ones."""
+    lines = render_candles(bars.tail(40), projections_for(bars), width=60, height=10)
+    joined = "".join(lines)
+    assert "bright_blue" in joined
+    assert "bright_green" in joined or "bright_red" in joined
+
+
+def styles_between(row: Text, start: int, end: int) -> list[str]:
+    """The styles covering a range of *visible* characters.
+
+    Slicing the markup string by index does not work: a row of 60 visible
+    characters carries well over a hundred characters of tags, so a slice of the
+    markup has nothing to do with the columns on screen. The spans do.
+    """
+    return [
+        str(span.style)
+        for span in row.spans
+        if span.start < end and span.end > start and span.style is not None
+    ]
+
+
+def test_projected_candles_use_no_direction_colour(bars) -> None:
+    """A projected bar must not be able to pass for a printed one.
+
+    Colour is the only thing distinguishing the two at a glance, so a rising
+    projection drawn green would be actively misleading.
+    """
+    projections = projections_for(bars, conviction=0.9)
+    width = 60
+    lines = render_candles(bars.tail(40), projections, width=width, height=10)
+
+    drawn = "".join(Text.from_markup(line).plain[-3:] for line in lines)
+    assert drawn.strip(), "nothing was drawn in the projected columns"
+
+    for line in lines:
+        row = Text.from_markup(line)
+        for style in styles_between(row, width - 3, width):
+            assert "green" not in style, f"a projected candle was drawn {style}"
+            assert "red" not in style, f"a projected candle was drawn {style}"
+
+
+def test_chart_reserves_columns_for_the_projection(bars) -> None:
+    """The projected bars sit at the right edge, after a divider."""
+    window = bars.tail(40)
+    lines = render_candles(window, projections_for(bars), width=60, height=10)
+    plain = [Text.from_markup(line).plain for line in lines]
+
+    assert any("┊" in row for row in plain), "no divider between actual and projected"
+    assert all(row.rstrip() for row in plain if "┊" in row)
+
+
+def test_chart_without_projections_is_unchanged(bars) -> None:
+    """No projection means no empty columns: the printed bars still fill the width."""
+    with_none = render_candles(bars.tail(40), None, width=60, height=10)
+    with_empty = render_candles(bars.tail(40), [], width=60, height=10)
+    assert with_none == with_empty
+    assert not any("┊" in Text.from_markup(line).plain for line in with_none)
+
+
+def test_projection_above_the_range_expands_the_price_scale(bars) -> None:
+    """The axis has to cover the projected bars, not just the printed ones.
+
+    An axis labelled only with the recent range while a blue bar sits above it
+    would put price outside the labelled range on screen.
+    """
+    from plugins.renderers.terminal.candles import render_chart
+
+    flat = bars.tail(40).copy()
+    for column in ("open", "high", "low", "close"):
+        flat[column] = 24_000.0
+
+    anchor = 24_000.0
+    now = flat.index[-1].to_pydatetime()
+    far = project_candles(flat, anchor=anchor, conviction=1.0, now=now, bars_ahead=3)
+
+    plain = render_chart(flat, far, width=50, height=10)
+    assert plain.top >= max(candle.high for candle in far)
+
+
+def test_projected_candles_are_inside_the_drawn_rows(bars) -> None:
+    """Every projected bar must land somewhere on the canvas."""
+    from plugins.renderers.terminal.candles import render_chart
+
+    chart = render_chart(bars.tail(40), projections_for(bars, conviction=1.0), width=50, height=10)
+    assert 0 <= chart.last_price_row < len(chart.candle_lines)
+
+
+def test_dashboard_renders_the_projected_bars(bars) -> None:
+    snapshot_with_projection = snapshot(bars)
+    snapshot_with_projection.projections = projections_for(bars)
+    snapshot_with_projection.conviction = 0.42
+
+    import io
+
+    dash = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
+    dash.console = Console(width=110, height=36)
+    buffer = io.StringIO()
+    Console(width=110, height=36, file=buffer, force_terminal=False).print(
+        dash.build(snapshot_with_projection, "live")
+    )
+    rendered = buffer.getvalue()
+    assert "projected" in rendered
+    assert "+1" in rendered and "+3" in rendered
+    assert "+0.42 view" in rendered
+    assert "█ actual" in rendered and "▓ projected" in rendered
+
+
+@pytest.mark.parametrize(("width", "height"), [(120, 44), (100, 32), (80, 24), (200, 60)])
+def test_chart_axis_stays_on_every_row_with_projections(bars, width: int, height: int) -> None:
+    """The width guard must still hold when three projected bars are added.
+
+    Those columns are the extra width that would push the axis onto the next
+    line, and the projected bars are exactly where it would go unnoticed.
+    """
+    lines = render_lines(bars, width, height, projections=projections_for(bars))
+    rows = chart_panel_lines(lines)
+    assert rows, "chart panel had no content rows"
+    for index, row in enumerate(rows):
+        assert PRICE_LABEL.search(row), (
+            f"chart row {index} has no price label on the same line — "
+            f"the row overflowed and wrapped: {row[:90]!r}"
+        )

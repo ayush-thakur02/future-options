@@ -334,7 +334,7 @@ def dashboard(
 
 
 def _run_offline_dashboard(kernel, engine, speed: float, refresh: float, timeframe: int) -> None:
-    from ui.dashboard import Dashboard
+    from plugins.renderers.terminal import TerminalRenderer
 
     console.print("[cyan]offline replay mode[/] — set up Upstox credentials for live data\n")
     market = kernel.build("source:simulated", days=5)
@@ -342,7 +342,7 @@ def _run_offline_dashboard(kernel, engine, speed: float, refresh: float, timefra
     engine.bootstrap(history=bars)
     ticks = market.ticks(bars, ticks_per_bar=6)
 
-    dash = Dashboard(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
+    dash = TerminalRenderer(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
     asyncio.run(_replay_loop(engine, ticks, dash, speed))
 
 
@@ -360,11 +360,11 @@ async def _replay_loop(engine, ticks, dash, speed: float) -> None:
 
 
 def _run_live_dashboard(kernel, engine, refresh: float, timeframe: int) -> None:
-    from ui.dashboard import Dashboard
+    from plugins.renderers.terminal import TerminalRenderer
 
     bars = BarLoader(kernel).load(days=15, refresh=True)
     engine.bootstrap(history=bars)
-    dash = Dashboard(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
+    dash = TerminalRenderer(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
     asyncio.run(_live_loop(engine, dash, refresh))
 
 
