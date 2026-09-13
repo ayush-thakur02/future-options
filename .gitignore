@@ -1,0 +1,46 @@
+# Data and model artifacts
+data/
+artifacts/
+logs/
+
+# Credentials — never commit these
+.env
+*.token
+upstox_token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Generated protobuf stubs are committed deliberately so the package installs
+# without a protoc toolchain. To regenerate:
+#   uv run python -m grpc_tools.protoc -I src/niftypulse/data/proto \
+#     --python_out=src/niftypulse/data/proto \
+#     src/niftypulse/data/proto/MarketDataFeed.proto
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+.commandcode/

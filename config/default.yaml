@@ -1,0 +1,61 @@
+# NIFTY Pulse configuration — tuned for scalping.
+# Every value here has a working default; edit only what you need.
+
+data:
+  # Upstox instrument key. Index keys use the NSE_INDEX| prefix.
+  #
+  # Note: an index publishes no traded volume and no order book, so the volume-
+  # and depth-based features fall back to tick count or switch off entirely.
+  # For a true scalping feed subscribe to the front-month NIFTY future instead
+  # (NSE_FO|...), which carries depth, traded value, and open interest.
+  instrument_key: "NSE_INDEX|Nifty 50"
+  symbol: "NIFTY 50"
+  # Base bar size. Feature and model windows are expressed in bars, so changing
+  # this invalidates trained artifacts and requires a retrain.
+  bar_minutes: 1
+  dir: "data"
+
+model:
+  # Scalping horizons, in bars (minutes at bar_minutes=1). Deliberately short —
+  # a 15-minute forecast is position trading, not scalping.
+  horizons: [1, 2, 3, 5]
+  dir: "artifacts"
+
+  # --- The cost hurdle. This is the setting that decides whether the platform
+  # --- is honest. A signal is only worth acting on if the move it forecasts is
+  # --- larger than the round trip needed to capture it.
+  #
+  # Require labelled training moves to clear that round trip. With this on, the
+  # model is only taught to classify moves that could actually be traded, rather
+  # than spending its capacity on sub-cost noise it can never profit from.
+  enforce_cost_hurdle: true
+  # Multiplier on the cost when setting the labelling threshold. At 1.0 a
+  # labelled move merely breaks even, which is not worth taking.
+  hurdle_multiple: 1.5
+
+  # Fraction of ATR used as the labelling dead band, applied as a floor beneath
+  # the cost hurdle above.
+  deadband_atr: 0.12
+
+  # Purged walk-forward cross-validation.
+  n_splits: 4
+  # Extra bars dropped from the end of each training fold, on top of the purge
+  # that removes overlapping labels. Guards against serial correlation.
+  embargo_bars: 20
+  # Minimum labelled samples before a horizon is considered trainable.
+  min_train_bars: 4000
+  # Folds trained in parallel. Estimators are pinned to one thread each while
+  # this is > 1, so raising it beyond the core count does not help.
+  train_n_jobs: 4
+
+  # Position sizing used to compute the cost hurdle, and in backtests.
+  # Verify lot_size against the current NIFTY contract specification — NSE
+  # revises it periodically, and it sets the smallest tradeable position.
+  reference_notional: 2_000_000
+  lot_size: 75
+
+backtest:
+  # Round-trip slippage per side, in basis points. Usually the largest real cost
+  # on a scalping timescale, so it is worth setting this pessimistically.
+  slippage_bps: 0.5
+  cost_bps: 0.6
