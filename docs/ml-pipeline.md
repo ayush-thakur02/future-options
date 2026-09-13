@@ -4,7 +4,7 @@ Turning 45,000 bars into a calibrated probability that the next few minutes go u
 — without fooling yourself in the process.
 
 ```
-src/niftypulse/ml/
+src/plugins/forecasts/ml_ensemble/
 ├── dataset.py       Dead-banded, hurdle-aware labelling
 ├── splits.py        Purged, embargoed walk-forward validation
 ├── models.py        4 base learners + soft-voting ensemble

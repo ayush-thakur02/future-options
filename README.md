@@ -1,11 +1,12 @@
 # NIFTY Pulse
 
-A scalping platform for NIFTY 50. Ingests live tick data from Upstox, runs a
-library of technical strategies, and trains calibrated machine-learning models to
-forecast the next 1–5 minutes of price direction — with transaction costs treated
-as the primary constraint rather than an afterthought.
+A scalping platform for NIFTY 50. Streams live ticks from Upstox, runs nineteen
+technical strategies and a trained model, projects the **next three candles every
+second**, and charts the call, the index and the put side by side — with
+transaction costs treated as the primary constraint rather than an afterthought.
 
 Everything runs locally. No data leaves your machine except the Upstox API calls.
+Everything that arrives is stored, partitioned so it is never fetched twice.
 
 ---
 
@@ -167,6 +168,10 @@ Full documentation is in [`docs/`](docs/README.md).
 | Get it running | [Getting started](docs/getting-started.md) |
 | Understand why it behaves as it does | [Scalping economics](docs/scalping-economics.md) |
 | See how the pieces fit | [Architecture](docs/architecture.md) |
+| Add or replace a component | [Plugins](docs/plugins.md) |
+| Know what the blue candles are | [Projection](docs/projection.md) |
+| Understand the call/index/put board | [Options](docs/options.md) |
+| Know what is on disk | [Storage](docs/storage.md) |
 | Look up a command | [CLI reference](docs/cli-reference.md) |
 | Look up a setting | [Configuration](docs/configuration.md) |
 | Interpret a training run | [ML pipeline](docs/ml-pipeline.md) |
@@ -179,41 +184,36 @@ Reference docs also cover the [data layer](docs/data-layer.md),
 
 ## Project layout
 
+Three layers, and one rule: `core` knows nothing, `kernel` knows plugins,
+`plugins` know their job, `runtime` decides which ones to use.
+
 ```
-src/niftypulse/
-├── config.py              # settings, credential resolution, cost hurdle
-├── models.py              # Tick, Signal, Prediction (with cost gate), Trade
-├── trading_calendar.py    # NSE session clock
-├── data/
-│   ├── upstox_auth.py     # OAuth 2.0 flow + token lifecycle
-│   ├── upstox_rest.py     # historical / intraday / quote endpoints
-│   ├── upstox_feed.py     # v3 WebSocket + protobuf decoding
-│   ├── aggregator.py      # tick -> candle, activity proxy for indices
-│   ├── synthetic.py       # offline data source
-│   ├── store.py           # Parquet persistence
-│   └── resample.py        # session-aware OHLCV aggregation
-├── features/
-│   ├── indicators.py      # 40+ indicators, no TA-Lib dependency
-│   ├── context.py         # session, calendar, regime features
-│   └── pipeline.py        # feature matrix assembly
-├── strategies/            # 18 strategies + cost-aware ML + ensemble
-├── ml/
-│   ├── dataset.py         # dead-banded, hurdle-aware labelling
-│   ├── splits.py          # purged walk-forward CV
-│   ├── models.py          # LightGBM / sklearn ensemble
-│   ├── calibration.py     # twice-gated Platt + isotonic calibration
-│   ├── metrics.py         # lift-aware evaluation, expected-move curve
-│   └── trainer.py         # training orchestration
-├── backtest/              # engine, cost model, reporting
-├── live/engine.py         # feed -> features -> strategies -> forecasts
-└── ui/
-    ├── charts.py          # candlestick, probability bars, sparklines
-    └── dashboard.py       # Rich terminal dashboard
+src/
+├── core/          # domain types, settings, calendar, the OHLCV schema
+├── kernel/        # discovery, capability wiring, the event bus
+├── plugins/       # everything that does work, as small packs
+│   ├── sources/       upstox · simulated · history · option_chain
+│   ├── aggregators/   candle_builder
+│   ├── features/      technical
+│   ├── strategies/    trend · momentum · reversion · volatility · ml_forecast
+│   ├── forecasts/     ml_ensemble · projection
+│   ├── advisory/      breakeven_gate
+│   └── renderers/     terminal
+├── runtime/       # session, engine, board, nowcast, conviction, bars
+├── backtest/      # costs, execution, reporting
+└── cli.py
 
 docs/                      # full documentation, see docs/README.md
-tests/                     # 112 tests
+tests/                     # 387 tests
 config/default.yaml        # settings
+data/                      # partitioned store: candles, ticks, chain
 ```
+
+**Everything is a plugin.** A capability is added by dropping a folder with a
+`plugin.py` into the tree — no registry to edit, no factory to extend. Plugins
+link through declared capabilities rather than imports, so any one can be replaced
+by another that provides the same name. `niftypulse plugins` lists what is wired
+to what: **15 packs, 30 capabilities**. See [Plugins](docs/plugins.md).
 
 ## Tests
 
@@ -221,11 +221,13 @@ config/default.yaml        # settings
 uv run pytest
 ```
 
-112 tests covering indicator correctness, feature causality, split purging,
-execution timing, position sizing, cost accounting, the cost hurdle, terminal
-rendering, and the ML pipeline end to end.
+387 tests covering indicator correctness, feature causality, split purging,
+execution timing, position sizing, cost accounting, the cost hurdle, plugin
+discovery and capability wiring, option pricing identities, projection geometry
+and its scoreboard, storage partitioning, terminal rendering, and the ML pipeline
+end to end.
 
-Four are worth knowing about:
+Some are worth knowing about:
 
 - `test_features_do_not_use_future_data` truncates the input and asserts features
   on the overlapping rows are unchanged. Any indicator that peeks forward fails.
@@ -237,6 +239,13 @@ Four are worth knowing about:
   width, only the panel interior — so a naive width check would have missed it.
 - `test_hurdle_makes_short_horizons_untrainable` asserts a horizon whose moves
   cannot cover costs is refused rather than trained into a losing model.
+- `test_every_instrument_gets_its_own_projection` asserts the three charts on the
+  board do not share one forecaster. They would have, if the kernel's memoisation
+  had not been bypassed — and the failure looks like three charts moving in
+  perfect lockstep rather than like a bug.
+- `test_leg_premium_decays_when_the_index_does_not_move` holds spot flat and
+  asserts the premium falls across a session, which is the strongest single check
+  that the options clock counts trading time rather than wall-clock time.
 
 ## Things that trip people up
 
@@ -257,6 +266,15 @@ bars, so a model trained on 1-minute bars cannot be applied to 5-minute ones.
 
 **Weekly expiry day is configurable.** NSE moved NIFTY weekly expiry from Thursday
 to Tuesday; it is `expiry_weekday` in `config/default.yaml`.
+
+**Ticks and chain history cannot be re-fetched.** The API publishes candles, not
+the tape that produced them. Both are recorded while a live session runs, so
+whatever is not recorded is gone. Everything else is pulled once and kept.
+
+**An at-the-money leg needs 60–100bp to pay for itself** — premium, costs and
+theta — against a median 1-minute move of 1.3bp. That is why the board says *no
+trade* most of the time, and it is the correct output rather than a failure of the
+search.
 
 ## Disclaimer
 

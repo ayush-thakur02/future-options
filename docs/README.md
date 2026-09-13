@@ -1,22 +1,25 @@
 # NIFTY Pulse — Documentation
 
-A scalping platform for NIFTY 50: live Upstox data in, cost-aware directional
-forecasts out.
+A scalping platform for NIFTY 50: live Upstox data in, cost-aware forecasts and
+projected candles out, with the calls and the puts beside the index.
 
 ---
 
 ## Start here
 
-| If you want to... | Read |
+| If you want to… | Read |
 |---|---|
 | Get it running | [Getting started](getting-started.md) |
-| Understand why the platform behaves the way it does | [Scalping economics](scalping-economics.md) |
+| Understand why it behaves as it does | [Scalping economics](scalping-economics.md) |
 | Understand how the pieces fit | [Architecture](architecture.md) |
+| Add or replace a component | [Plugins](plugins.md) |
+| Read the dashboard | [Dashboard](dashboard.md) |
+| Know what the blue candles are | [Projection](projection.md) |
+| Understand the call/index/put board | [Options](options.md) |
+| Know what is on disk | [Storage](storage.md) |
 | Know what every command does | [CLI reference](cli-reference.md) |
 | Know what every setting does | [Configuration](configuration.md) |
 | Interpret a training run | [ML pipeline](ml-pipeline.md) |
-| Read the dashboard | [Dashboard](dashboard.md) |
-| Know what the platform refuses to do, and why | [Scalping economics](scalping-economics.md) |
 | Contribute | [Development](development.md) |
 | Fix something broken | [Troubleshooting](troubleshooting.md) |
 
@@ -26,26 +29,27 @@ forecasts out.
 
 Scalping is a cost game before it is a prediction game. A NIFTY round trip costs
 roughly **3.9 basis points**. Most 1-minute price moves are smaller than that, so
-most scalps are unprofitable regardless of how good the forecast is.
+most scalps are unprofitable no matter how good the forecast is.
 
-This shapes the entire platform:
+This shapes the whole platform:
 
 - Training **refuses** to learn moves that cannot pay for themselves.
 - Signals stay **silent** unless the expected move clears the round trip.
-- The UI reports the **cost decision**, not just the direction.
+- A long option leg is required to clear its **premium, costs and theta** before
+  the board will call it a trade — 60–100bp for an at-the-money leg depending on
+  the time left, against a median 1-minute move of 1.3bp.
+- The projected candles are **scored** against what actually printed.
 - The most common correct output is **no trade**.
 
-The measured ceiling, on the bundled synthetic data:
-
-| Horizon | Median move | Clears 3.90 bp hurdle |
+| Horizon | Median move | Clears the 3.90 bp hurdle |
 |---|---|---|
 | 1m | 1.30 bp | 5.7% |
 | 2m | 1.80 bp | 16.0% |
 | 3m | 2.20 bp | 24.3% |
 | 5m | 2.87 bp | 36.3% |
 
-Full reasoning in [Scalping economics](scalping-economics.md). That document is
-worth reading before tuning anything.
+Full reasoning in [Scalping economics](scalping-economics.md). Read that before
+tuning anything.
 
 ---
 
@@ -53,15 +57,19 @@ worth reading before tuning anything.
 
 ### Concepts
 - [Scalping economics](scalping-economics.md) — the cost hurdle, and why it dominates everything
-- [Architecture](architecture.md) — data flow, module map, design decisions
+- [Architecture](architecture.md) — layer map, data flow, design decisions
+- [Plugins](plugins.md) — the plugin contract, kinds, capabilities, how to write one
 
 ### Components
-- [Data layer](data-layer.md) — Upstox REST, WebSocket, protobuf, aggregation, storage
-- [Features](features.md) — all 117 model inputs, grouped and explained
-- [Strategies](strategies.md) — the 18 rule-based strategies, the ML strategy, the ensemble
-- [ML pipeline](ml-pipeline.md) — labelling, purged validation, models, calibration, metrics
-- [Backtesting](backtesting.md) — execution model, cost model, reporting
+- [Data layer](data-layer.md) — Upstox auth, REST, WebSocket, protobuf, aggregation
+- [Storage](storage.md) — the partitioned store, the manifest, recording the tape
+- [Features](features.md) — all 123 columns, grouped and explained
+- [Strategies](strategies.md) — the 19 rule-based strategies, the model, the ensemble
+- [ML pipeline](ml-pipeline.md) — labelling, purged validation, models, calibration
+- [Projection](projection.md) — the next three candles, and how they are scored
+- [Options](options.md) — pricing, the chain, the board, the verdicts
 - [Dashboard](dashboard.md) — reading the terminal UI
+- [Backtesting](backtesting.md) — execution model, cost model, reporting
 
 ### Reference
 - [CLI reference](cli-reference.md) — every command and flag
@@ -75,7 +83,9 @@ worth reading before tuning anything.
 
 ## Status
 
-85 tests, lint clean. Verified end to end on macOS with Python 3.14.7.
+**387 tests, lint clean.** Verified end to end on macOS with Python 3.14.7 —
+live-path logic exercised by tests, the interactive dashboard and the full
+pipeline run offline on generated data.
 
 The platform places **no orders** and connects to **no broker's order routing**.
 It is research software. See the disclaimer at the end of the main README.

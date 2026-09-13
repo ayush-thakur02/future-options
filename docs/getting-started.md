@@ -10,144 +10,149 @@
 brew install libomp
 ```
 
-Without `libomp`, LightGBM fails to import with a `dlopen` error. The platform
-detects this and silently drops LightGBM from the ensemble rather than crashing,
-so you still get three working learners — but install it if you can.
+Without `libomp` the platform detects it and drops LightGBM from the ensemble
+rather than crashing, so you still get three working learners — but install it if
+you can.
 
 ## Install
 
 ```bash
-cd "Future & Options"
 uv sync --all-extras
 ```
 
-`--all-extras` pulls in the dev dependencies, including `grpcio-tools` which is
+`--all-extras` pulls in the dev dependencies, including `grpcio-tools`, which is
 needed only to regenerate the protobuf stubs.
+
+---
 
 ## First run — no credentials needed
 
-Every command accepts `--offline`, which runs on generated data. You can exercise
-the whole pipeline before wiring up an API key.
+Every command accepts `--offline`, so the whole pipeline can be exercised before
+wiring up an API key.
 
 ```bash
-uv run niftypulse doctor                      # environment check
-uv run niftypulse fetch --offline --days 120  # generate synthetic history
-uv run niftypulse train                       # train the scalping horizons
-uv run niftypulse dashboard --offline         # live dashboard on replayed ticks
+uv run niftypulse doctor                       # environment check
+uv run niftypulse plugins                      # what is installed, and how it is wired
+uv run niftypulse sync --offline --days 120    # generate and store history
+uv run niftypulse train                        # train the scalping horizons
+uv run niftypulse snapshot                     # one frame of the board, then exit
+uv run niftypulse dashboard --offline --speed 60
 ```
 
-**What to expect:** accuracy at the base rate and AUC near 0.50. This is the
-correct result, not a bug. The generated series is a near-random walk with no
-persistent structure to find. Its purpose is to prove the pipeline is wired
-correctly.
+`snapshot` is the fastest way to see the whole thing work: it prints one
+call/index/put board with the projected candles and exits.
 
-The tests include a positive control that injects a deterministic pattern and
-asserts the pipeline learns it (AUC > 0.80) alongside a negative control asserting
-no spurious edge appears on a random walk (AUC < 0.60). Those two together are
-what let you trust that "found nothing" means the same thing as "there was
-nothing to find".
-
-## Going live with Upstox
-
-### 1. Create an app
-
-Go to <https://account.upstox.com/developer/apps> and create an app. You need:
-
-- **API key** (`client_id`)
-- **API secret** (`client_secret`)
-- **Redirect URI** — must match exactly what you send in the login request
-
-### 2. Store the credentials
-
-```bash
-cp .env.example .env
-```
-
-Fill in:
-
-```bash
-UPSTOX_CLIENT_ID=your-api-key
-UPSTOX_CLIENT_SECRET=your-api-secret
-UPSTOX_REDIRECT_URI=https://your-redirect-uri
-```
-
-### 3. Authenticate
-
-```bash
-uv run niftypulse login
-```
-
-This opens the Upstox login page, then asks you to paste the `code` parameter
-from the redirect URL. The token is stored at `data/upstox_token.json` with
-`chmod 600`.
-
-**Upstox tokens expire at 03:30 IST the next morning**, so this is a
-once-per-morning step. `doctor` shows whether the stored token is still valid.
-
-If you would rather not run the browser flow, Upstox also lets you generate a
-token manually from the developer dashboard and set it as `UPSTOX_ACCESS_TOKEN`
-in `.env`, which takes precedence over the stored file.
-
-### 4. Fetch history and train
-
-```bash
-uv run niftypulse fetch --days 180
-uv run niftypulse train
-```
-
-The v3 historical endpoint caps a single request at one month of 1-minute
-candles, so a 180-day fetch is chunked into roughly 7 requests. Rate limiting is
-handled internally.
-
-### 5. Run the dashboard
-
-```bash
-uv run niftypulse dashboard
-```
-
-Without `--offline`, this bootstraps from cached history and then streams live
-ticks over the Upstox v3 WebSocket.
+**What to expect from `train`:** accuracy at the base rate and AUC near 0.50.
+That is the correct result, not a bug. The generated series is a near-random walk
+with no persistent structure, and its value is confirming the pipeline is wired
+correctly. The tests include a positive control that injects a deterministic
+pattern and asserts the pipeline learns it, so "found nothing" is distinguishable
+from "broken".
 
 ---
 
-## A complete session
+## With credentials
+
+Create an app at <https://account.upstox.com/developer/apps>, then:
 
 ```bash
-# morning
-uv run niftypulse doctor          # confirm token is valid
-uv run niftypulse login           # if the token expired overnight
-uv run niftypulse fetch --days 5  # top up the cache
-uv run niftypulse dashboard       # scalp
+cp .env.example .env      # fill in client id, secret, redirect URI
+uv run niftypulse login   # opens the Upstox login, stores the token
+```
 
-# research, any time
-uv run niftypulse strategies
-uv run niftypulse models
+Tokens expire at 03:30 IST the next day, so `login` is a once-per-morning step.
+
+Then:
+
+```bash
+uv run niftypulse sync --days 400          # pull everything the account can give
+uv run niftypulse data                     # what is now stored, without a network call
+uv run niftypulse train                    # train on real bars
+uv run niftypulse dashboard                # live: websocket feed, recording as it goes
+```
+
+`sync` checks the cache first and requests only the missing tail, so running it
+every morning costs one request when nothing has changed and none at all when the
+cache is current.
+
+### What gets stored, and what cannot be
+
+| Dataset | Where | Re-fetchable? |
+|---|---|---|
+| 1-minute candles | `data/candles/<instrument>/<year>/<month>/<date>.parquet` | Yes |
+| Ticks | `data/ticks/<instrument>/<date>/<HH>.parquet` | **No** |
+| Option chain samples | `data/chain/...` | **No** |
+
+A provider publishes candles, not the tape that produced them. Ticks and chain
+snapshots are recorded while a live session runs, so anything not recorded is
+gone. Start a `dashboard` session to begin collecting. See
+[Storage](storage.md).
+
+---
+
+## Reading the dashboard
+
+The board shows three charts — the index, the at-the-money call and the
+at-the-money put — each with the next three candles projected in **blue** after
+the last printed one. Green and red are printed bars; blue is never a printed bar.
+
+Under the charts, a verdict per leg:
+
+```
+leg            do       needs   projected      edge  why
+INDEX          ▲F          4bp      +0.3bp      -4bp  needs 3.9bp, projected 0.3bp
+CALL 24,050    ▲F        60bp       +0.3bp     -60bp  needs 60bp, projected 0bp
+PUT 24,050     ▲S        62bp       +0.3bp     -62bp  IV 10.0% over realised 5.6%, ...
+```
+
+`needs` is what the underlying must do for that leg to pay for itself, costs and
+theta included. `projected` is what the platform thinks it will do. Most of the
+time the first is far larger than the second, and the correct output is **no
+trade** — printed as such rather than left blank.
+
+See [Dashboard](dashboard.md) for the rest of the screen, [Projection](projection.md)
+for what the blue candles are, and [Options](options.md) for the verdicts.
+
+---
+
+## Common first commands
+
+```bash
+uv run niftypulse strategies                  # every rule, and how often it fires
+uv run niftypulse models                      # trained artifacts and their metrics
+uv run niftypulse backtest --strategy ensemble --horizon 5
 uv run niftypulse backtest --strategy ml --horizon 5 --sweep
+uv run niftypulse plugins --capabilities      # the capability index
 ```
+
+`--strategy ml` replays walk-forward out-of-sample predictions, so the decisions
+come from models that never saw the bars being traded.
 
 ---
 
-## Where things live
+## Tuning for your costs
 
-| Path | Contents |
-|---|---|
-| `data/candles.parquet` | Cached 1-minute OHLCV bars |
-| `data/upstox_token.json` | Access token (chmod 600) |
-| `artifacts/direction_*m.joblib` | Trained models |
-| `artifacts/oof_*m.parquet` | Walk-forward predictions, used by `--strategy ml` |
-| `artifacts/training_report.json` | Last training run summary |
-| `config/default.yaml` | Settings |
-| `.env` | Credentials (gitignored) |
+The hurdle is only as good as the cost inputs. Adjust these in
+`config/default.yaml` before drawing conclusions:
 
-Set `NIFTYPULSE_HOME` to relocate all of it, useful if you want to keep several
-configurations side by side.
+```yaml
+model:
+  reference_notional: 2_000_000   # position size used to derive the hurdle
+  lot_size: 75                    # verify against the current NIFTY spec
+  hurdle_multiple: 1.5            # margin required above break-even
+  enforce_cost_hurdle: true       # set false to study signal without the gate
+```
+
+`backtest --slippage` and `--notional` override them for a single run.
 
 ---
 
 ## Next
 
-- Read [Scalping economics](scalping-economics.md) before tuning anything. Most
-  changes that look like improvements are not.
-- [Configuration](configuration.md) if you want to change the cost assumptions —
-  they matter more than any modelling choice.
-- [CLI reference](cli-reference.md) for everything the commands can do.
+| If you want to… | Read |
+|---|---|
+| Understand why the platform refuses most trades | [Scalping economics](scalping-economics.md) |
+| Add or replace a component | [Plugins](plugins.md) |
+| See how the pieces fit | [Architecture](architecture.md) |
+| Look up a command | [CLI reference](cli-reference.md) |
+| Fix something broken | [Troubleshooting](troubleshooting.md) |

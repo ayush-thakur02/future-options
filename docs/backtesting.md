@@ -3,7 +3,7 @@
 Simulating execution honestly, which is harder than it sounds.
 
 ```
-src/niftypulse/backtest/
+src/backtest/
 ├── costs.py     Indian derivatives cost model
 ├── engine.py    Event-driven execution
 └── report.py    Performance statistics

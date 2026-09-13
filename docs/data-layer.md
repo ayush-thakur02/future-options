@@ -1,24 +1,37 @@
 # Data layer
 
-Sources, transport, aggregation, and storage.
+Sources, transport, aggregation, and where it all lands.
 
 ```
-src/niftypulse/data/
-├── upstox_auth.py    OAuth 2.0 flow and token lifecycle
-├── upstox_rest.py    Historical, intraday, and quote endpoints
-├── upstox_feed.py    v3 WebSocket client with protobuf decoding
-├── aggregator.py     Tick → OHLCV bar
-├── resample.py       Timeframe aggregation
-├── store.py          Parquet persistence
-├── synthetic.py      Offline data source
-└── proto/            MarketDataFeed.proto + compiled stubs
+src/plugins/sources/
+├── upstox/           the account-backed adapter
+│   ├── auth.py       OAuth 2.0 flow and token lifecycle
+│   ├── rest.py       Historical, intraday, and quote endpoints
+│   ├── feed.py       v3 WebSocket client with protobuf decoding
+│   ├── broker.py     the object the "broker" capability builds
+│   └── proto/        MarketDataFeed.proto + compiled stubs
+├── simulated/        generated series, clock-paced feed, tick expansion
+├── history/          the partitioned store, manifest, recorders, resampling
+└── option_chain/     pricing, the chain, the money legs
+
+src/plugins/aggregators/candle_builder/    tick → session-anchored time bars
 ```
+
+The Upstox client is not imported by anything above it. The history store asks
+for the `broker` capability; the session asks for a source. That is what makes
+the provider a pack rather than a dependency.
+
+The API surface implemented here is documented — with signatures verified against
+the official SDK — in the installed skill at
+`.agents/skills/upstox/references/`. Read those before changing a URL: `HistoryV3Api`
+takes no `api_version` and the v2 classes take one, and mixing the two is the most
+common source of errors.
 
 ---
 
 ## Authentication
 
-`upstox_auth.py`
+`plugins/sources/upstox/auth.py`
 
 Upstox uses the OAuth 2.0 authorization-code flow.
 
@@ -38,17 +51,16 @@ Token resolution order:
 1. `UPSTOX_ACCESS_TOKEN` environment variable
 2. `data/upstox_token.json`, if unexpired
 
-Two alternative flows exist for automation. Upstox's **semi-automated** flow
-pushes a token to a notifier URL after you approve on your phone, and the
-**manual** flow lets you copy a token from the developer dashboard. Both are
-supported by Upstox; this platform implements the interactive flow and accepts a
-token from the environment, which covers scheduled jobs adequately.
+`UpstoxBroker` wraps all three concerns — credential, REST client, live feed — so
+a plugin that needs market data depends on one capability (`broker`) rather than
+on three modules. `broker.is_configured` never raises: a missing token is a
+state, and it is what the session uses to decide between live and simulated.
 
 ---
 
 ## REST client
 
-`upstox_rest.py`
+`plugins/sources/upstox/rest.py`
 
 | Method | Endpoint | Use |
 |---|---|---|
@@ -58,33 +70,41 @@ token from the environment, which covers scheduled jobs adequately.
 | `fetch_intraday` | `/v3/historical-candle/intraday/{key}/{unit}/{interval}` | Current session only |
 | `fetch_quote` | `/v2/market-quote/quotes` | Latest snapshot |
 
+Note the historical endpoint takes `to_date` **before** `from_date`. It is not a
+typo here, and it is an easy thing to "fix" into a broken request.
+
 ### Window limits
 
 The v3 endpoint caps a single request:
 
 | Unit | Available from | Max per request |
 |---|---|---|
-| minutes 1–15 | Jan 2022 | 1 month |
-| minutes 16–300 | Jan 2022 | 1 quarter |
-| hours 1–5 | Jan 2022 | 1 quarter |
-| days | Jan 2000 | 1 decade |
+| minutes 1–15 | Jan 2022 | ~1 month |
+| minutes 16–300 | Jan 2022 | ~1 quarter |
+| hours 1–5 | Jan 2022 | ~1 quarter |
+| days | Jan 2000 | ~1 decade |
 | weeks, months | Jan 2000 | unlimited |
 
-`_chunk_days()` encodes these, and `fetch_history_range` walks the range
+`_chunk_days()` encodes these and `fetch_history_range` walks the range
 accordingly. A single failed window is logged and skipped rather than aborting a
 long backfill — over 180 days, one bad request should not cost you the other
 twenty-five.
 
+Intervals are validated locally (`VALID_INTERVALS`) before the request goes out,
+so an unsupported unit fails with a clear message instead of as a 400 halfway
+through a backfill.
+
 ### Rate limiting
 
-`RateLimiter` is a sliding window enforcing both published caps: **8 requests per
-second** and **180 per minute**, comfortably under the provider's 25/s and
-250/min. It blocks with a short sleep rather than raising, so callers do not need
-retry logic for the common case.
+`RateLimiter` is a sliding window enforcing **8 requests per second** and **180 per
+minute**. The published caps are 50/s and 500/min for market data; a backfill is a
+bulk operation and there is nothing to gain from running at the ceiling, which
+also leaves headroom for a live feed in the same process. It blocks with a short
+sleep rather than raising, so callers do not need retry logic for the common case.
 
-`_get` additionally retries on 429 and 5xx with exponential backoff up to 4
-attempts. Other status codes raise immediately with the response body attached,
-because a malformed instrument key will not fix itself on retry.
+`_get` retries on 429 and 5xx with exponential backoff up to 4 attempts. Other
+status codes raise immediately with the response body attached, because a
+malformed instrument key will not fix itself on retry.
 
 ### Intraday versus historical
 
@@ -93,216 +113,103 @@ current session. `load_history` fetches both and merges them — without this, a
 morning run would be missing the most recent bars, which are exactly the ones
 that matter.
 
+### Endpoints not yet used
+
+Orders, GTT, portfolio, margins, the option chain, and instrument search exist in
+the API and are deliberately not called. This platform places no orders. See the
+chain reader note in [Options](options.md) for the one that is next.
+
 ---
 
 ## WebSocket feed
 
-`upstox_feed.py`
-
-### Connection
+`plugins/sources/upstox/feed.py`
 
 ```
-GET  /v3/feed/market-data-feed/authorize     → wss:// URI with single-use code
-WSS  connect, send binary subscription
+GET  /v3/feed/market-data-feed/authorize   → single-use socket URI
+WS   connect, send {"method": "sub", "data": {...}}, receive protobuf frames
 ```
 
-The authorized URI contains a single-use `code`, so the connection is
-self-authenticating. The `Authorization` header is sent as well, matching the
-documentation.
+Two feed shapes matter. Index instruments (`NSE_INDEX|Nifty 50`) arrive as
+`IndexFullFeed` and carry no order book — only LTPC plus rolled-up OHLC. Equity
+and futures instruments arrive as `MarketFullFeed` with depth, traded value, open
+interest, and bid/ask. The decoder normalises both into one `Tick` and leaves the
+depth fields at zero when the instrument has none.
 
-### Subscription
+| Mode | Data |
+|---|---|
+| `ltpc` | LTP, last-traded quantity, close, volume |
+| `full` | LTP + OHLC + market depth + OI |
+| `full_d30` | `full` with 30 levels of depth |
+| `option_greeks` | IV, delta, gamma, theta, vega |
 
-Sent as a **binary** frame (not text), JSON-encoded:
+Reconnection is automatic with exponential backoff to 30s, and status is reported
+through a callback so the dashboard can show it. A quiet market is handled
+explicitly: no frames for 45 seconds sends a ping rather than assuming the
+connection is dead.
 
-```json
-{
-  "guid": "a1b2c3d4e5f6a7b8c9d0",
-  "method": "sub",
-  "data": { "mode": "full", "instrumentKeys": ["NSE_INDEX|Nifty 50"] }
-}
-```
+The generated protobuf stub declares a dependency on
+`google/protobuf/wrappers.proto` that it does not import, which makes it
+unimportable on its own. `proto/__init__.py` imports the dependency first, so the
+generated file stays regenerable and untouched. The bug was latent until the
+plugin loader — which imports every plugin, as it must — imported the feed; the
+live path would have failed on its first connection with the same error.
 
-Modes: `ltpc`, `full`, `full_d30`, `option_greeks`. The platform uses `full`,
-which for a futures instrument carries depth, traded value, open interest, and
-average traded price.
-
-### Decoding
-
-Frames are Protobuf, decoded against `MarketDataFeed.proto`. Two shapes matter:
-
-| Instrument type | Feed variant | Contains |
-|---|---|---|
-| Index | `IndexFullFeed` | LTPC + rolled-up OHLC |
-| Equity / futures | `MarketFullFeed` | LTPC + depth + ATP + OI + buy/sell quantities |
-
-The decoder normalises both into a single `Tick` type, leaving depth fields at
-zero for instruments that have no order book.
-
-The first frame is `market_info` (segment status), the second a snapshot, and
-subsequent frames are live updates.
-
-### Resilience
-
-`run()` reconnects with exponential backoff capped at 30s. A 45-second receive
-timeout sends a ping rather than treating silence as a failure — a quiet market
-is not a broken connection, and disconnecting on it would churn connections
-through lunchtime.
-
-### Regenerating the stubs
-
-Only needed if Upstox publishes a new `.proto`:
+Regenerating the stubs:
 
 ```bash
 uv run python -m grpc_tools.protoc \
-  -I src/niftypulse/data/proto \
-  -I "$(uv run python -c 'import grpc_tools,os;print(os.path.join(os.path.dirname(grpc_tools.__file__),"_proto"))')" \
-  --python_out=src/niftypulse/data/proto \
-  src/niftypulse/data/proto/MarketDataFeed.proto
+  -I src/plugins/sources/upstox/proto \
+  --python_out=src/plugins/sources/upstox/proto \
+  src/plugins/sources/upstox/proto/MarketDataFeed.proto
 ```
-
-The generated `MarketDataFeed_pb2.py` is **committed deliberately**, so the
-package installs without a protoc toolchain.
 
 ---
 
-## Tick aggregation
+## The simulated source
 
-`aggregator.py`
+`plugins/sources/simulated/`
 
-Converts a tick stream into OHLCV bars.
+Two shapes of the same generated market:
 
-### Session-anchored buckets
+- **`SimulatedFeed`** — a tick stream paced by the wall clock, for the live
+  dashboard. One minute of wall clock per one-minute bar at `speed=1.0`. The
+  first pass is re-based onto the current time so a session opens on the present;
+  later passes continue forward rather than rewinding, because a tick stream that
+  moves backwards is not something the aggregator is built to survive.
+- **`generate_ticks`** — the same expansion as a frame, for headless replay.
 
-```python
-def bar_start(moment, bar_minutes):
-    elapsed = (moment - session_open).total_seconds()
-    return session_open + timedelta(minutes=(elapsed // (bar_minutes*60)) * bar_minutes)
-```
-
-Buckets anchor to the 09:15 session open, not the top of the hour. Naive
-`resample("5min")` would offset every bar by 45 minutes and leave a 15-minute
-stub at the close.
-
-### The volume problem
-
-**An index has no traded volume.** There is no consolidated tape for NIFTY 50, so
-`volume` arrives as zero.
-
-Feeding a column of zeros into volume indicators produces constant, meaningless
-signals that look like features and carry nothing. So the aggregator also records
-`tick_count` — how many updates landed in the bar — which is a genuine proxy for
-activity.
-
-`activity_proxy()` in `features/indicators.py` encapsulates the fallback:
-
-```python
-volume  if the instrument reports any
-tick_count  otherwise
-constant 1.0  if neither (which makes the features constant, so they get dropped)
-```
-
-Returns a Series in every case. An earlier version returned a scalar `1.0`,
-which broke `.rolling()` with an `AttributeError` — see
-[Development](development.md#regression-guards).
-
-### Session gaps
-
-If a new bar's timestamp is on a different day than the partial bar, the partial
-is **discarded rather than emitted**. Emitting it would produce a bar containing
-an overnight gap, and every indicator downstream would inherit the artefact.
+The generated series has volatility clustering (an AR(1) process on the shock
+scale), intraday volume seasonality, regime shifts, and a weak mean-reverting
+component. That is deliberate: a series with *no* structure would let a broken
+feature pipeline look identical to a working one, because "found nothing" and
+"found nothing because it is broken" would be indistinguishable.
 
 ---
 
-## Resampling
+## Aggregation
 
-`resample.py`
+`plugins/aggregators/candle_builder/`
 
-Aggregates 1-minute bars to longer timeframes for the dashboard's `--timeframe`
-flag.
+`CandleAggregator` accumulates ticks into OHLCV bars and emits each bar once it
+closes. Two details:
 
-The same session-anchoring applies: each row's bar timestamp is computed directly
-and grouped on that. Because the bucket counter restarts at each session open,
-bars can never span two days and no separate session guard is needed.
+**Buckets are anchored to the 09:15 open, not the hour.** A naive
+`resample("5min")` offsets every bar by 45 minutes and turns the last bar of the
+day into a 15-minute stub.
 
-> **Note on a pandas behaviour:** passing a `MultiIndex` to `DataFrame.groupby`
-> treats it as a flat array of tuple keys, not as two grouping levels. An earlier
-> implementation relied on that and silently produced a single-level index. The
-> current code groups on a computed timestamp instead, which sidesteps the issue
-> entirely.
+**`tick_count` is recorded alongside volume.** An index has no consolidated tape,
+so `volume` is zero for NIFTY 50. Rather than feed a column of zeros into volume
+indicators — which produces constant, meaningless signals — the aggregator counts
+updates per bar and the feature layer falls back to that.
 
-Changing `bar_minutes` invalidates trained models, because feature windows are
-expressed in bars.
+A session gap drops a stale partial bar rather than emitting one that spans the
+overnight break.
 
 ---
 
 ## Storage
 
-`store.py`
-
-`CandleStore` is an append-only Parquet store.
-
-```python
-store.append(frame)   # merge, deduplicate on index, keep="last"
-store.load(start, end)
-store.coverage()      # (first, last) timestamps
-```
-
-Deduplication keeps the **last** occurrence, so re-fetching an overlapping window
-overwrites rather than duplicating. This matters because the current session is
-re-pulled on every run.
-
-All indices are normalised to `Asia/Kolkata`. Timezone bugs in this layer are
-particularly nasty — a naive index silently shifts every session boundary.
-
----
-
-## Offline source
-
-`synthetic.py`
-
-Generates NIFTY-like 1-minute bars with:
-
-- regime-switching drift and volatility
-- volatility clustering via an AR(1) process on the shock scale
-- a U-shaped intraday volume curve
-- a weak mean-reverting component
-
-The mean reversion exists so the series has *some* structure to find. Without it,
-a model finding nothing would be uninformative; with it, "found nothing" is a
-statement about the pipeline.
-
-### Why not pure noise
-
-`generate_candles` produces a series whose AUC comes out near 0.50 — the honest
-answer for something close to a random walk. The test suite separately constructs
-a **deterministic alternating-drift series** as a positive control, so the two
-cases are distinguishable. See [Development](development.md#testing-philosophy).
-
-`generate_ticks` expands bars into a plausible tick stream for replay mode, and
-`generate_quote` shapes a payload like the REST response.
-
-Both are seeded and deterministic — `generate_candles(seed=42)` returns an
-identical frame every time, which the tests rely on.
-
----
-
-## Instrument keys
-
-| Instrument | Key |
-|---|---|
-| NIFTY 50 | `NSE_INDEX\|Nifty 50` |
-| NIFTY Bank | `NSE_INDEX\|Nifty Bank` |
-| India VIX | `NSE_INDEX\|India VIX` |
-| Front-month future | `NSE_FO\|<token>` — look up in the instrument master |
-
-The full instrument master is published as gzipped JSON:
-
-```
-https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz
-```
-
-Filter on `segment` and `instrument_type` to find a key — `NSE_FO` + `FUT` for
-futures, `NSE_INDEX` + `INDEX` for indices.
-
-**Prefer the future for scalping.** The index publishes no volume and no order
-book, which disables seven activity features and both order-flow strategies.
+See [Storage](storage.md). The short version: one parquet per instrument per
+trading day for bars, one per hour for the tape, and a manifest that answers
+"what have I got?" without a scan.

@@ -25,7 +25,7 @@ Line length 100, target Python 3.11. Rules: `E`, `F`, `I`, `UP`, `B`.
 
 ## Testing philosophy
 
-112 tests. The interesting ones are not the ones that check a function returns a
+387 tests. The interesting ones are not the ones that check a function returns a
 value — they are the ones designed to **fail in a specific way if something
 subtly breaks.**
 
@@ -83,7 +83,9 @@ documents the failure it prevents:
 ### What is not tested
 
 - **The live WebSocket path.** It needs Upstox credentials and a market session.
-  The decoder is exercised via a synthetic protobuf round-trip instead.
+  The decoder is exercised via a synthetic protobuf round-trip instead, and the
+  loader's import of every plugin catches structural breakage (it found a
+  generated protobuf stub that could not be imported standalone).
 - **Real market data.** Everything runs on synthetic data. See
   [Getting started](getting-started.md#first-run--no-credentials-needed).
 
@@ -93,13 +95,24 @@ documents the failure it prevents:
 
 ```
 tests/
-├── conftest.py        Shared fixtures: bars, long_bars, trend_bars, rng
-├── test_data.py       Aggregation, resampling, storage, calendar, models
-├── test_features.py   Causality, indicator correctness, feature assembly
-├── test_backtest.py   Splits, execution timing, sizing, costs, reporting
-├── test_ml.py         Labelling, CV, models, calibration, hurdle, training
-└── test_ui.py         Grid, charts, axis, dashboard layout
+├── conftest.py          Shared fixtures: bars, long_bars, trend_bars, rng, offline_session
+├── test_kernel.py       Discovery, registry, capabilities, the bus, the loader
+├── test_data.py         Aggregation, resampling, ingest round trips, the calendar
+├── test_storage.py      Partitioning, the manifest, recorders, legacy migration
+├── test_features.py     Causality, indicator correctness, feature assembly
+├── test_strategies.py   Pack discovery, manifest/class agreement, firing rates, gates
+├── test_backtest.py     Splits, execution timing, sizing, costs, reporting
+├── test_ml.py           Labelling, CV, models, calibration, hurdle, training
+├── test_option_chain.py Pricing identities, the chain, the clock, premium candles
+├── test_projection.py   Path geometry, decay, tick momentum, the scoreboard
+├── test_board.py        Multi-instrument composition, verdicts, board rendering
+├── test_runtime.py      Conviction, the engine, the refresh clock, the feed
+└── test_ui.py           Grid, charts, axis, colours, dashboard layout
 ```
+
+The modules follow the tree: one test file per area that has behaviour worth
+pinning, and a plugin's behaviour belongs in its own module rather than in the
+kernel's.
 
 Fixtures in `conftest.py` are session-scoped where the data is expensive to
 generate, and seeded so results are reproducible.
@@ -157,9 +170,25 @@ ways that are hard to trace.
 
 ## Extending
 
+### Add a plugin
+
+The whole installation procedure:
+
+1. Make a folder under the right kind in `src/plugins/`, with `__init__.py` at
+   every level.
+2. Write `plugin.py` with a `MANIFEST` and a `build(ctx, **params)`.
+3. `uv run niftypulse plugins` — it should appear with its capabilities.
+4. Add tests in a module of its own.
+
+If it fills a slot something else already fills, either declare a *different*
+capability or give it none and let the runtime pick it by handle. Two providers of
+one capability is rejected at registration, deliberately: a capability that
+resolved to different plugins on different runs would make a composition
+impossible to reason about. See [Plugins](plugins.md).
+
 ### Add an indicator
 
-1. Implement in `features/indicators.py`, causal and vectorised.
+1. Implement in `plugins/features/technical/indicators.py`, causal and vectorised.
 2. Add it in the relevant `_add_*` function in `pipeline.py`, appending the name
    to that group's `columns` list.
 3. New group? Call `_register(group, columns)`.
@@ -168,6 +197,11 @@ ways that are hard to trace.
 5. Retrain. Feature count changes invalidate artifacts.
 
 ### Add a strategy
+
+Add the class to the right `rules.py`, then add its name to that module's
+`STRATEGIES` tuple. The pack's manifest derives one `strategy:<name>` capability
+per class from that tuple, so a rule cannot exist in code without being
+advertised — and a test asserts both directions.
 
 See [Strategies § Adding a strategy](strategies.md#adding-a-strategy).
 
@@ -223,10 +257,10 @@ alone, because LightGBM spawns threads that contend for the same cores.
 
 ```bash
 uv run python -c "
-import cProfile, pstats, io, sys
+import cProfile, pstats, sys
 sys.path.insert(0, 'src')
-from niftypulse.data.synthetic import generate_candles
-from niftypulse.features import build_features
+from plugins.sources.simulated.series import generate_candles
+from plugins.features.technical import build_features
 
 bars = generate_candles(days=6, seed=1).tail(2000)
 build_features(bars)
@@ -243,7 +277,15 @@ pstats.Stats(pr).sort_stats('cumulative').print_stats(12)
 
 - **Commit the generated protobuf stubs.** The package must install without a
   protoc toolchain.
-- **Never commit `.env`, `data/`, or `artifacts/`.** Already in `.gitignore`.
+- **Never commit `.env`, `data/`, or `artifacts/`.** The `.gitignore` entries are
+  anchored to the repository root (`/data/`) — unanchored, `data/` also matches
+  `src/…/data/`, which is how the entire data layer once stayed out of version
+  control without anyone noticing.
+- **The layout is flat.** Everything lives directly under `src/`, so the
+  top-level packages are `core`, `kernel`, `plugins`, `runtime`, `features`,
+  `strategies`, `ml`, `ui`, `live`, `backtest` and `cli`. Any import that crosses
+  a top-level boundary is written absolutely; intra-package imports stay
+  relative.
 - **Verify rate assumptions before changing the cost model.** A one basis point
   change in slippage moves the hurdle by 25%.
 
@@ -255,7 +297,8 @@ pstats.Stats(pr).sort_stats('cumulative').print_stats(12)
 uv run ruff check src/ tests/
 uv run pytest
 uv run niftypulse doctor
-uv run niftypulse dashboard --offline    # eyeball the UI
+uv run niftypulse snapshot               # eyeball a board
+uv run niftypulse dashboard --offline --speed 60
 ```
 
 If you changed anything structural — feature count, horizons, cost model, bar

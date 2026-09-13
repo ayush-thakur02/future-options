@@ -71,25 +71,48 @@ next to `upstox token` if that is the case.
 The instrument key does not match anything. Check the exact spelling and prefix —
 `NSE_INDEX|Nifty 50`, not `NSE_INDEX|NIFTY50` or `NIFTY 50`.
 
-Keys are case-sensitive and the prefix matters. Look yours up in the instrument
-master:
+Keys are case-sensitive and the prefix matters. Resolve one with the instrument
+search API rather than a master-file download — it is the server-side endpoint,
+and it supports ATM-relative option lookup:
 
-```bash
-curl -s https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz \
-  | gunzip | python -c "
-import json,sys
-for row in json.load(sys.stdin):
-    if row.get('segment')=='NSE_INDEX':
-        print(row['instrument_key'], '|', row['name'])
-"
+```python
+from scripts.instrument_search import resolve_instrument_key, find_option
+
+resolve_instrument_key("Nifty 50", exchanges="NSE", segments="INDEX")["instrument_key"]
+find_option("Nifty 50", expiry="current_week", option_type="CE", atm_offset=0)
 ```
+
+Do not hardcode an F&O key: the numeric token changes every expiry. See
+`.agents/skills/upstox/references/instruments.md`.
 
 ### Fetch is slow
 
-The v3 endpoint caps 1–15 minute candles at one month per request, so 180 days is
-about 7 requests. Rate limiting holds to 8/second and 180/minute internally.
+The v3 endpoint caps 1–15 minute candles at about one month per request, so 180
+days is about 7 requests. Rate limiting holds to 8/second and 180/minute
+internally.
 
-A long first fetch is expected. Subsequent runs only fetch the tail.
+A long first fetch is expected. **Subsequent runs only fetch the tail** — `sync`
+requests the missing window and nothing else, so a morning run with a current
+cache makes no API calls at all.
+
+### `data/candles.parquet.migrated` is sitting in my data folder
+
+That is your history, imported into the partitioned store and moved aside. It is
+safe to delete once `niftypulse data` shows the bars in `candles/`. It is kept by
+default because starting from an empty store would look exactly like losing your
+history. See [Storage](storage.md).
+
+### `doctor` shows `legacy candle file` as a warning
+
+A pre-partitioning `candles.parquet` is present and has not been imported yet.
+The import happens on first use of the store, so any of `sync`, `fetch`, or
+`dashboard` will do it.
+
+### The store is bigger than I expected
+
+Ticks and chain samples are the bulk of it, and neither can be re-fetched. If you
+need to bound it, delete old `data/ticks/` and `data/chain/` partitions — nothing
+else depends on them. `niftypulse data --verbose` lists every file with its size.
 
 ### `no candles retrieved`
 
@@ -238,16 +261,34 @@ If you see this, you are running modified code. The guards are in
 
 The right-alignment pad is being stripped. See above.
 
-### Replay is slow
+### The replay is too slow — or too fast
 
-Expected. The engine recomputes features on every bar close, at roughly 200 ms per
-bar, so replay is **compute-bound** regardless of `--speed`.
+`--offline` is **paced against the wall clock** on purpose: one minute of wall
+clock per one-minute bar at `--speed 1.0`, so the projected candles have seconds
+to move in. `--speed 60` makes a minute take a second, which is the practical
+setting for watching the board work.
 
-Live operation is unaffected — bars close once a minute, so 200 ms is 0.3% of the
-interval.
+### The chart shows only one candle after the first tick
 
-`--speed 0` removes the artificial delay but the replay still takes about 30
-seconds per 150 bars.
+A bug, fixed: the snapshot took its bars from the aggregator alone, which starts
+empty, so the history beside it vanished the moment the first tick arrived. If you
+see it, you are running modified code.
+
+### The blue candles do not move
+
+They are refreshed by `runtime/nowcast.py` on its own clock (`--nowcast`, default
+1 s), not on ticks alone — so they should move even on a quiet tape. If they are
+frozen, check the status line for a feed error, and that `forecast:projection` is
+still registered (`niftypulse plugins --kind forecast`).
+
+The one deliberate reset: a **roll** re-strikes a leg and clears its path. A leg
+more than two strikes from the money is no longer the trade the board is about.
+
+### There are no CALL and PUT charts
+
+No `option_chain` capability is registered, or `--no-legs` was passed. Check with
+`niftypulse plugins --capabilities`. Without it the board shows the index alone
+rather than failing.
 
 ### The dashboard exits immediately
 
@@ -261,10 +302,18 @@ window. It resolves after warm-up.
 
 ### `order_flow` and `activity_spike` show 0% strength
 
-**Correct behaviour for an index.** NIFTY 50 publishes no order book and no traded
-volume, so the strategies return no opinion rather than fabricating one.
+**Correct behaviour for the index.** NIFTY 50 publishes no order book and no
+traded volume, so the strategies return no opinion rather than fabricating one.
 
-Point `instrument_key` at the front-month NIFTY future to activate them.
+They activate on the option legs, which *do* carry volume and open interest, and
+on the front-month future if you point `instrument_key` at one.
+
+### Every leg says FLAT, and the headline says no trade
+
+**That is the finding, not a failure.** An at-the-money leg needs the underlying
+to travel 60–100bp to pay for its own premium, costs and theta, against a median
+1-minute move of 1.3bp. The arithmetic is printed next to the
+verdict so it can be checked. See [Options](options.md).
 
 ### Timeframe mismatch warning
 
@@ -311,6 +360,34 @@ uv run niftypulse backtest --strategy ml --horizon 5 --slippage 2.0 --notional 5
 ```
 
 If it survives pessimistic costs, it is worth a closer look.
+
+---
+
+## Plugins
+
+### A plugin is missing from `niftypulse plugins`
+
+Either its `plugin.py` failed to import — the report at the bottom of the command's
+output names the module and the error — or it is nested without an `__init__.py`
+at every level, in which case the loader cannot walk into it.
+
+### `capability 'x' is provided by both A and B`
+
+Registration rejects two providers of one capability, deliberately: a capability
+that resolved to different plugins on different runs would make a composition
+impossible to reason about. Either rename one, or give it no capability and let
+the runtime pick it by handle.
+
+### `source:history requires 'broker', which no registered plugin provides`
+
+A composition is missing a pack its consumers declared. `kernel.validate()` lists
+every unsatisfied requirement at once, so fix them together rather than one run at
+a time. `niftypulse plugins` prints them at the bottom.
+
+### `strategy:ml_forecast skipped: no trained model for horizon 1m`
+
+Normal offline. The pack cannot be built without artifacts, and the catalog records
+the reason and carries on with the rule-based engine. Run `niftypulse train`.
 
 ---
 

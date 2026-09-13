@@ -108,7 +108,7 @@ impression of a working 1-minute scalper.
 
 ### 3. Signals carry a cost gate
 
-`strategies/registry.py`
+`plugins/strategies/catalog.py`
 
 The ML strategy stays silent unless the expected move clears the hurdle. Most
 bars do not. That is the point.

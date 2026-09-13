@@ -1,17 +1,23 @@
 # Strategies
 
-18 rule-based strategies, plus an ML strategy, a composite ensemble, and a hybrid
-blend. All share one interface.
+**19 rule-based strategies**, plus the trained model as a strategy, plus a
+composite ensemble. All share one interface.
 
 ```
-src/niftypulse/strategies/
-├── base.py         Strategy ABC, CompositeStrategy, helpers
-├── trend.py        5 strategies
-├── reversion.py    5 strategies
-├── momentum.py     4 strategies
-├── volatility.py   4 strategies
-└── registry.py     Registry, MLStrategy, HybridStrategy, weights
+src/plugins/strategies/
+├── base.py       Strategy ABC, CompositeStrategy, StrategyPack, helpers
+├── catalog.py    StrategyCatalog + DEFAULT_WEIGHTS
+├── trend/        5 rules  + plugin.py    provides strategy:ema_trend, ...
+├── momentum/     5 rules  + plugin.py
+├── reversion/    5 rules  + plugin.py
+├── volatility/   4 rules  + plugin.py
+└── ml_forecast/  1 rule   + plugin.py    requires "forecast"
 ```
+
+Each pack's `rules.py` exposes a `STRATEGIES` tuple and its `plugin.py` derives one
+`strategy:<name>` capability per class from it, so a rule cannot exist in code
+without being advertised — or be advertised without existing. A test asserts both
+directions.
 
 ---
 
@@ -270,9 +276,9 @@ See [Scalping economics](scalping-economics.md).
 Weighted blend of component scores, normalised by total weight. A component
 returning all zeros (its inputs unavailable) simply contributes nothing.
 
-### `default_ensemble()`
+### `catalog.ensemble()`
 
-Blends all 18 strategies using `DEFAULT_WEIGHTS`:
+Blends every strategy the loaded packs offer, using `DEFAULT_WEIGHTS`:
 
 ```python
 DEFAULT_WEIGHTS = {
@@ -292,24 +298,34 @@ DEFAULT_WEIGHTS = {
 These encode a prior — trend and flow carry more weight than oscillator fades —
 and are meant to be replaced by measured weights after a backtest run.
 
-### `HybridStrategy`
-
-Blends rule-based conviction with the model probability at a configurable weight
-(default 55% model). Rules are legible but brittle; models adapt but are opaque.
-Keeping both in the loop means disagreement between them is itself visible.
+Weights naming a strategy this build does not have are dropped silently, which is
+what makes the default map usable offline where the model pack has no artifacts.
 
 ---
 
-## Registry
+## The catalog
 
 ```python
-from niftypulse.strategies import available_strategies, build_strategy, all_strategies
+from core.settings import Settings
+from kernel import Kernel
+from plugins.strategies import StrategyCatalog
 
-available_strategies()        # ['activity_spike', 'bollinger_reversion', ...]
-build_strategy("ema_trend")   # instantiate by name
-build_strategy("ensemble")    # the default composite
-all_strategies()              # one instance of each
+kernel = Kernel.bootstrap(Settings())
+catalog = StrategyCatalog.from_kernel(kernel)
+
+catalog.summary()             # "19 strategies (momentum 5, reversion 5, trend 5, volatility 4)"
+catalog.names()               # sorted rule names
+catalog.get("ema_trend")      # one instance
+catalog.get("ensemble")       # the default composite
+catalog.all()                 # one instance of each
+catalog.pack_of("order_flow") # which pack offers it
+catalog.skipped               # packs that could not be built, and why
 ```
+
+`from_kernel` builds every `kind=strategy` plugin and records rather than raises
+the ones that fail. That is not defensive for its own sake: offline, with no
+trained artifacts, the model pack legitimately cannot be built, and the run must
+still produce a working rule-based engine.
 
 ---
 
@@ -329,17 +345,23 @@ instrument.
 To inspect raw scores:
 
 ```python
-from niftypulse.data import MarketDataSource
-from niftypulse.features import build_features
-from niftypulse.strategies import all_strategies, StrategyContext
+from plugins.features.technical import build_features
+from plugins.sources.simulated.series import generate_candles
+from plugins.strategies import StrategyContext
 
-bars = MarketDataSource(settings, offline=True).load_history(days=20)
-context = StrategyContext(bars=bars, features=build_features(bars))
+bars = generate_candles(days=20, seed=7)
+features = build_features(bars)
+context = StrategyContext(bars=bars, features=features)
 
-for strategy in all_strategies():
-    scores = strategy.score(context)
+for strategy in catalog.all():
+    scores = strategy.score(context).dropna()
     print(f"{strategy.name:22s} std={scores.std():.3f} last={scores.iloc[-1]:+.3f}")
 ```
+
+NaN in the warm-up window is correct — a 200-bar EMA has no value on bar 3 — and
+the consumers drop or fill it. What must never happen is a NaN *after* warm-up:
+the ensemble fills those with zero, so a broken rule would look like a rule with
+no opinion. A test asserts exactly that.
 
 A useful sanity check: **a strategy whose scores are non-zero on nearly every bar
 will dominate any weighted blend.** SuperTrend did exactly that before its quality
@@ -349,14 +371,19 @@ gate was added.
 
 ## Adding a strategy
 
-1. Implement the class in the appropriate module, subclassing `Strategy`.
+1. Implement the class in the right `rules.py`, subclassing `Strategy`.
 2. Define `name`, `category`, `description` as class attributes.
 3. Implement `score()`, returning a Series in `[-1, 1]`. Return `self._empty(context)`
    if required columns are missing — never raise on absent inputs, because the
    strategy may legitimately be run against an instrument that lacks them.
-4. Register it in `_registry()` in `registry.py`.
-5. Add a weight to `DEFAULT_WEIGHTS` if it should join the ensemble.
+4. Add the class to that module's `STRATEGIES` tuple. The manifest derives its
+   capabilities from there, so nothing else needs registering.
+5. Add a weight to `DEFAULT_WEIGHTS` in `catalog.py` if it should join the ensemble.
 6. Run `uv run niftypulse strategies` and check its firing rate is sane.
+
+`roc_momentum` sat unregistered through several versions of the old hand-written
+registry, weighting a strategy that never ran. The tuple exists so that cannot
+happen again.
 
 Guidance from experience on this codebase:
 

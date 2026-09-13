@@ -5,11 +5,18 @@ column is tagged with a group so the training report can show where a model is
 actually drawing its signal from.
 
 ```
-src/niftypulse/features/
+src/plugins/features/technical/
 ├── indicators.py   40+ indicators, pure pandas
-├── context.py      Session, calendar, prior-session, regime
-└── pipeline.py     Matrix assembly
+├── session.py      Session, calendar, prior-session, regime
+├── pipeline.py     Matrix assembly and the FeaturePipeline object
+└── plugin.py       The pack: provides "features"
 ```
+
+The whole set is one plugin (`features:technical`, providing the `features`
+capability) rather than one per indicator family. Features are assembled
+together and consumed together, and splitting them into packs that must always be
+used as a pair would be fake modularity — the real seam is the capability, and a
+different feature set replaces the pack.
 
 ---
 
@@ -254,7 +261,7 @@ it is configurable because the exchange has changed this before.
 ## Going from bars to a matrix
 
 ```python
-from niftypulse.features import build_features, feature_columns
+from plugins.features.technical import build_features, feature_columns
 
 features = build_features(bars, bar_minutes=1, expiry_weekday=1)
 columns = feature_columns(features)   # 117, numeric and non-constant
