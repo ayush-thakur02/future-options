@@ -16,6 +16,7 @@ from .core.calendar import TradingCalendar
 from .core.settings import load_settings
 from .data import MarketDataSource
 from .features import FEATURE_GROUPS, build_features, feature_columns
+from .kernel import BUILTIN_PACKAGE, Kernel
 from .live import LiveEngine
 from .ml.predictor import Predictor
 from .ml.trainer import (
@@ -423,6 +424,65 @@ def strategies() -> None:
         )
     console.print(table)
     console.print("[dim]'fires' is the share of bars with conviction above the entry threshold.[/]")
+
+
+# ------------------------------------------------------------------- plugins
+
+
+@app.command()
+def plugins(
+    kind: str = typer.Option("", help="Filter by kind: source, strategy, forecast, renderer, ..."),
+    capabilities: bool = typer.Option(
+        False, "--capabilities", help="Show which plugin provides which capability"
+    ),
+) -> None:
+    """List every plugin the kernel discovers, bundled and installed."""
+    kernel = Kernel.bootstrap(_settings())
+    entries = kernel.entries(kind or None)
+
+    if not entries:
+        console.print(
+            f"[yellow]no plugins found[/] under {BUILTIN_PACKAGE}"
+            + (f" for kind {kind!r}" if kind else "")
+        )
+    else:
+        table = Table(title="Plugins", header_style="bold cyan")
+        for column in ("handle", "origin", "provides", "description"):
+            table.add_column(column)
+        for entry in entries:
+            manifest = entry.manifest
+            table.add_row(
+                f"[bold]{entry.handle}[/]",
+                "[grey62]bundled[/]" if not entry.is_third_party else "[bright_cyan]installed[/]",
+                ", ".join(manifest.provides) or "[grey42]—[/]",
+                manifest.description,
+            )
+        console.print(table)
+
+    if capabilities:
+        table = Table(title="Capabilities", header_style="bold cyan")
+        table.add_column("capability")
+        table.add_column("provided by")
+        for name, handle in sorted(kernel.registry.capabilities().items()):
+            table.add_row(name, handle)
+        console.print(table)
+
+    problems = kernel.validate()
+    if problems:
+        console.print("\n[yellow]unresolved requirements[/]")
+        for problem in problems:
+            console.print(f"  [yellow]·[/] {problem}")
+
+    if kernel.load_report.errors:
+        console.print("\n[red]plugins that failed to load[/]")
+        for module, error in kernel.load_report.errors:
+            console.print(f"  [red]·[/] {module}: {error}")
+
+    console.print(
+        f"\n[dim]{len(kernel.registry)} plugins, "
+        f"{len(kernel.registry.capabilities())} capabilities. "
+        f"Drop a folder containing plugin.py into {BUILTIN_PACKAGE} to add one.[/]"
+    )
 
 
 # -------------------------------------------------------------------- doctor

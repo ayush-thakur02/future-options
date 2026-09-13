@@ -106,6 +106,11 @@ class Settings:
 
     credentials: UpstoxCredentials = field(default_factory=UpstoxCredentials)
 
+    # Per-plugin parameters, keyed by handle ("forecast:projection"). The kernel
+    # merges these into the kwargs a plugin's build() receives, so tuning a
+    # plugin is a config edit rather than a code change.
+    plugin_config: dict[str, dict] = field(default_factory=dict)
+
     def ensure_dirs(self) -> None:
         for path in (self.data_dir, self.model_dir, self.log_dir):
             path.mkdir(parents=True, exist_ok=True)
@@ -157,6 +162,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     data_cfg = raw.get("data", {})
     model_cfg = raw.get("model", {})
     backtest_cfg = raw.get("backtest", {})
+    plugins_cfg = raw.get("plugins", {}) or {}
 
     credentials = UpstoxCredentials(
         client_id=os.getenv("UPSTOX_CLIENT_ID"),
@@ -191,6 +197,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
         model_dir=root / model_cfg.get("dir", "artifacts"),
         log_dir=root / "logs",
         credentials=credentials,
+        plugin_config={
+            str(handle): dict(values or {}) for handle, values in plugins_cfg.items()
+        },
     )
     return settings
 
