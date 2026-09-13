@@ -196,18 +196,42 @@ and the panel prints the score. See [Projection](projection.md).
 
 ## Latency
 
-Per bar close, measured on the bundled generated data:
+Measured on the bundled generated data.
+
+**Startup**, opening the dashboard on a 45,000-bar cache:
+
+| Stage | Cost |
+|---|---|
+| Load the bars | ~100 ms |
+| Warm three instruments (features + 19 strategies each) | ~500 ms |
+| **First frame on screen** | **~0.6 s** |
+
+It was 40 seconds, and the whole of it was one function: pricing premium candles
+for the legs called a day-looping session clock once per bar *per leg* across the
+entire history, and that call's cost grew with the distance to the expiry. The
+clock and the premium path are vectorised now, the board carries only the window
+its engines actually read, and the model no longer spawns a worker pool to predict
+a single row. Per-refresh cost across the board is **~7–9 ms**.
+
+**Steady state**, per bar close:
 
 | Stage | Cost |
 |---|---|
 | `build_features` (2,000 bars) | ~50 ms |
 | strategies (19 rules, 600-bar tail) | ~150 ms |
-| projection refresh (whole board, 1 Hz) | ~10–17 ms |
+| model inference (single row, parallel inference off) | ~40 ms |
+| projection refresh (whole board, 1 Hz) | ~7–9 ms |
 | render | ~3 ms |
 
 Bars close once a minute, so the expensive path uses well under 1% of the
-interval. `hurst_exponent` was originally 71% of feature time; it is now
-vectorised across windows via `sliding_window_view` and roughly 7x faster.
+interval. Two earlier wins are worth keeping in mind: `hurst_exponent` was 71% of
+feature time before it was vectorised across windows via `sliding_window_view`
+(roughly 7x faster), and LightGBM/sklearn parallelism had to be turned *off* for
+inference — `ExtraTrees(n_jobs=-1)` runs its trees through joblib's process
+backend, so every single-row `predict_proba` started a loky pool.
+
+Anything that runs per bar, per instrument or per second is array arithmetic
+rather than a Python loop. When a loop is unavoidable it is commented as such.
 
 ---
 

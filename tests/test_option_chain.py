@@ -10,6 +10,7 @@ session because time passes, not because a drift term was chosen.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -29,6 +30,7 @@ from plugins.sources.option_chain.chain import (
     next_weekly_expiry,
     smile_iv,
     synthetic_chain,
+    trading_minutes_array,
     trading_minutes_to,
 )
 from plugins.sources.option_chain.plugin import OptionChainSource
@@ -410,3 +412,128 @@ def test_leg_breakeven_accepts_the_cost_of_trading_it(source, bars) -> None:
     with_cost = leg.quote.breakeven_move_bps(extra_cost=2.0)
     assert with_cost > bare
     assert with_cost - bare == pytest.approx((2.0 / (abs(leg.quote.delta) * leg.quote.spot)) * 10_000, rel=1e-6)
+
+
+# ------------------------------------------------------- the vectorised clock
+
+
+@pytest.mark.parametrize(
+    ("label", "expiry", "start", "stop"),
+    [
+        ("same-day", datetime(2026, 3, 17, 15, 30, tzinfo=IST), "2026-03-17 09:15", "2026-03-17 15:30"),
+        ("weekend gap", datetime(2026, 3, 17, 15, 30, tzinfo=IST), "2026-03-13 09:15", "2026-03-17 15:30"),
+        ("distant expiry", datetime(2026, 4, 28, 15, 30, tzinfo=IST), "2026-03-13 09:15", "2026-03-17 15:30"),
+        ("after the close", datetime(2026, 3, 18, 15, 30, tzinfo=IST), "2026-03-17 15:20", "2026-03-18 15:30"),
+        ("mid-session expiry", datetime(2026, 3, 17, 12, 0, tzinfo=IST), "2026-03-16 09:15", "2026-03-17 15:30"),
+    ],
+)
+def test_vectorised_clock_matches_the_loop(label, expiry, start, stop) -> None:
+    """The fast path and the readable path must agree exactly.
+
+    `trading_minutes_array` exists because the loop costs 120 microseconds a call
+    and the premium series calls it once per bar per leg. Two implementations of
+    one quantity is how a leg chart ends up disagreeing with its own quote, so
+    every awkward case is checked: a weekend, an expiry weeks away, an expiry
+    mid-session, and timestamps past the close.
+    """
+    stamps = pd.date_range(start, stop, freq="7min", tz="Asia/Kolkata")
+    vector = trading_minutes_array(stamps, expiry)
+    scalar = np.array([trading_minutes_to(stamp.to_pydatetime(), expiry) for stamp in stamps])
+    assert np.abs(vector - scalar).max() < 1e-9
+
+
+def test_vectorised_clock_handles_an_empty_series() -> None:
+    assert len(trading_minutes_array(pd.DatetimeIndex([]), datetime(2026, 3, 17, tzinfo=IST))) == 0
+
+
+def test_time_stops_at_the_expiry() -> None:
+    """Nothing decays after the option has expired."""
+    expiry = datetime(2026, 3, 17, 15, 30, tzinfo=IST)
+    after = pd.date_range("2026-03-17 15:31", "2026-03-18 15:30", freq="30min", tz="Asia/Kolkata")
+    assert (trading_minutes_array(after, expiry) == 0).all()
+
+
+def test_the_array_price_agrees_with_the_scalar_price() -> None:
+    """One formula, two call shapes, identical numbers."""
+    spots = np.array([23_000.0, 24_000.0, 24_500.0])
+    for kind in (CALL, PUT):
+        scalar = np.array(
+            [px.bs_price(float(spot), 24_000.0, 0.12, ONE_DAY, kind) for spot in spots]
+        )
+        vector = px.bs_price_array(spots, 24_000.0, np.array([0.12] * 3), np.array([ONE_DAY] * 3), kind)
+        assert np.abs(vector - scalar).max() < 1e-9
+
+
+def test_array_greeks_agree_with_the_scalar_greeks() -> None:
+    spots = np.array([23_800.0, 24_000.0, 24_200.0])
+    ivs = np.array([0.11, 0.12, 0.13])
+    years = np.array([ONE_DAY, ONE_DAY, ONE_DAY])
+
+    for kind in (CALL, PUT):
+        scalar_delta = np.array([px.bs_delta(float(s), 24_000.0, float(v), y, kind)
+                                 for s, v, y in zip(spots, ivs, years, strict=True)])
+        assert np.abs(px.bs_delta_array(spots, 24_000.0, ivs, years, kind) - scalar_delta).max() < 1e-12
+
+    scalar_gamma = np.array([px.bs_gamma(float(s), 24_000.0, float(v), y)
+                             for s, v, y in zip(spots, ivs, years, strict=True)])
+    assert np.abs(px.bs_gamma_array(spots, 24_000.0, ivs, years) - scalar_gamma).max() < 1e-12
+
+    scalar_theta = np.array([px.bs_theta_per_minute(float(s), 24_000.0, float(v), y)
+                             for s, v, y in zip(spots, ivs, years, strict=True)])
+    assert np.abs(px.bs_theta_array(spots, 24_000.0, ivs, years) - scalar_theta).max() < 1e-15
+
+
+# --------------------------------------------------------- leg bars at scale
+
+
+def test_pricing_a_long_history_is_fast() -> None:
+    """A cold start must not price the cache bar by bar in Python.
+
+    Pricing a full history took **40 seconds** before this change: the premium
+    path called a day-looping session clock once per bar per leg, and that call's
+    cost grew with the distance to the expiry. The array version is flat, and the
+    bound here is deliberately loose — it is a guard against a return to seconds,
+    not a benchmark, so it will not flake on a slow machine.
+    """
+    source = OptionChainSource(Settings())
+    long_history = generate_candles(days=15, seed=13)
+    assert len(long_history) > 5_000
+
+    started = time.perf_counter()
+    legs = source.legs(long_history.tail(5_000))
+    elapsed = time.perf_counter() - started
+
+    assert set(legs) == {CALL, PUT}
+    assert len(legs[CALL].bars) == 5_000
+    assert np.isfinite(legs[CALL].bars[["open", "high", "low", "close"]].to_numpy()).all()
+    assert elapsed < 2.0, f"pricing 5,000 bars took {elapsed:.1f}s"
+
+
+def test_the_priced_last_bar_matches_the_chain_quote(bars) -> None:
+    """The premium on the chart's last bar must equal the chain's own quote.
+
+    Two pricing paths — the series and the single quote — and a leg whose candles
+    disagree with its own strip is a chart that contradicts itself.
+    """
+    source = OptionChainSource(Settings())
+    leg = source.legs(bars.tail(300))[CALL]
+    quote = source.quote(
+        CALL,
+        leg.strike,
+        float(bars["close"].iloc[-1]),
+        bars.index[-1].to_pydatetime(),
+        atm_iv=float(leg.greeks["iv"]),
+    )
+    assert leg.bars["close"].iloc[-1] == pytest.approx(quote.premium, rel=1e-6, abs=0.05)
+
+
+def test_every_leg_candle_contains_its_own_body(bars) -> None:
+    """The invariant the vectorised extremes have to preserve."""
+    source = OptionChainSource(Settings())
+    for kind in (CALL, PUT):
+        leg = source.legs(bars.tail(300))[kind].bars
+        body_top = leg[["open", "close"]].max(axis=1)
+        body_bottom = leg[["open", "close"]].min(axis=1)
+        assert (leg["high"] >= body_top - 1e-9).all(), kind
+        assert (leg["low"] <= body_bottom + 1e-9).all(), kind
+        assert (leg["low"] >= 0).all(), kind

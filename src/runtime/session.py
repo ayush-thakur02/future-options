@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -98,16 +99,28 @@ class Session:
             forecaster=self.engine.forecaster,
         )
 
-    def bootstrap(self) -> Session:
-        """Load history and warm everything up, so the first frame is readable."""
+    def bootstrap(self, progress: Callable[[str], None] | None = None) -> Session:
+        """Load history and warm everything up, so the first frame is readable.
+
+        ``progress`` is called at each stage. Warming three instruments is real
+        work — a feature matrix and nineteen strategies per instrument — and a
+        silent pause before the first frame reads as a hang.
+        """
+        report = progress or (lambda _message: None)
+        started = time.perf_counter()
+
+        report("loading bars")
         bars = self.loader.load(
             days=self.config.days,
             refresh=self.config.refresh_history and self.live,
             quiet=False,
             offline=self.config.offline,
         )
+        report(f"  {len(bars):,} bars in {time.perf_counter() - started:.1f}s")
 
+        warm_started = time.perf_counter()
         if self.config.legs and self.kernel.registry.capabilities().get("option_chain"):
+            report(f"warming instruments (index + legs) over {self.config.days} days")
             self.board = MarketBoard(
                 self.kernel,
                 bar_minutes=self.kernel.settings.bar_minutes,
@@ -118,13 +131,17 @@ class Session:
             # keeps talking to one thing.
             self.engine = self.board.index_engine
         else:
+            report("warming the engine")
             self.engine.bootstrap(history=bars)
             self.engine.refresh_projection()
+
+        report(f"  {len(self.engine.history):,} bars warmed in {time.perf_counter() - warm_started:.1f}s")
 
         if self.renderer is not None:
             self.renderer.forecaster = self.engine.forecaster
 
         self._start_recording()
+        report(f"ready in {time.perf_counter() - started:.1f}s")
         return self
 
     def _start_recording(self) -> None:

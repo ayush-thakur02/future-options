@@ -29,10 +29,15 @@ from core.calendar import IST
 from .pricing import (
     CALL,
     PUT,
+    TRADING_MINUTES_PER_YEAR,
     breakeven_move_bps,
     bs_delta,
+    bs_delta_array,
     bs_gamma,
+    bs_gamma_array,
     bs_price,
+    bs_price_array,
+    bs_theta_array,
     bs_theta_per_minute,
     bs_vega_per_vol_point,
     years_from_minutes,
@@ -52,6 +57,7 @@ SYNTHETIC_IV_PREMIUM = 1.15
 SESSION_OPEN_TIME = time(9, 15)
 SESSION_CLOSE_TIME = time(15, 30)
 SESSION_MINUTES_PER_DAY = 375
+SESSION_OPEN_MINUTES = SESSION_OPEN_TIME.hour * 60 + SESSION_OPEN_TIME.minute
 
 
 # --------------------------------------------------------------------- clock
@@ -85,6 +91,77 @@ def trading_minutes_to(moment: datetime, expiry: datetime) -> float:
                 total += (end - start).total_seconds() / 60.0
         day += timedelta(days=1)
     return total
+
+
+def trading_minutes_array(stamps, expiry: datetime) -> np.ndarray:
+    """Session minutes from each timestamp to expiry, vectorised.
+
+    The per-timestamp version loops calendar days, which is correct and costs
+    ~120 microseconds a call — fine for one quote, ruinous for a series where it
+    is called once per bar per leg. This decomposes the same quantity:
+
+        minutes(t) = session left on t's day
+                   + whole sessions strictly between t's day and the expiry
+                   + session elapsed on the expiry day
+
+    with the three terms read off one cumulative array over contiguous calendar
+    days. A test asserts it matches the loop to within 1e-9 across a weekend, a
+    distant expiry, an expiry day and after the close.
+
+    Both count only session time, so neither decays overnight or at the weekend.
+    """
+    index = pd.DatetimeIndex(stamps)
+    if len(index) == 0:
+        return np.zeros(0, dtype="float64")
+
+    expiry = expiry.astimezone(IST)
+    expiry_day = pd.Timestamp(expiry.date()).tz_localize(IST)
+    moment_days = index.normalize()
+
+    # Continuous calendar days, so a weekend or a gap between the series and the
+    # expiry is represented as days with no session rather than missing from the
+    # cumulative sum — which is what makes the "sessions between" term correct for
+    # an expiry weeks away.
+    span = pd.date_range(min(moment_days.min(), expiry_day), max(moment_days.max(), expiry_day))
+    is_trading = np.array([day.weekday() < 5 for day in span.date])
+    available = np.where(is_trading, float(SESSION_MINUTES_PER_DAY), 0.0)
+    prefix = np.concatenate([[0.0], np.cumsum(available)])
+
+    positions = {day.date(): position for position, day in enumerate(span)}
+    day_index = np.array([positions[day.date()] for day in moment_days], dtype="int64")
+    expiry_index = positions[expiry_day.date()]
+
+    # Session minutes already gone at each timestamp, from the clock alone.
+    minutes_of_day = (index - moment_days).total_seconds().to_numpy() / 60.0
+    elapsed = np.where(
+        is_trading[day_index],
+        np.clip(minutes_of_day - SESSION_OPEN_MINUTES, 0.0, float(SESSION_MINUTES_PER_DAY)),
+        0.0,
+    )
+
+    expiry_trading = bool(is_trading[expiry_index])
+    expiry_elapsed = (
+        float(
+            np.clip(
+                (expiry.hour * 60 + expiry.minute + expiry.second / 60.0) - SESSION_OPEN_MINUTES,
+                0.0,
+                float(SESSION_MINUTES_PER_DAY),
+            )
+        )
+        if expiry_trading
+        else 0.0
+    )
+
+    between = np.maximum(prefix[expiry_index] - prefix[np.minimum(day_index + 1, len(span))], 0.0)
+    same_day = day_index == expiry_index
+
+    total = np.where(
+        same_day,
+        expiry_elapsed - elapsed,
+        (available[day_index] - elapsed) + between + expiry_elapsed,
+    )
+    total = np.where(np.asarray(index > pd.Timestamp(expiry)), 0.0, total)
+    return np.maximum(total, 0.0)
 
 
 def next_weekly_expiry(moment: datetime, weekday: int = 1) -> datetime:
@@ -292,6 +369,23 @@ def synthetic_chain(
     return chain
 
 
+def _smile_iv_array(atm_iv: float, moneyness_bps, curvature: float = 0.06):
+    """The smile, over an array of moneyness."""
+    scaled = np.asarray(moneyness_bps, dtype="float64") / 100.0
+    return np.maximum(atm_iv * (1.0 + curvature * scaled * scaled), 0.01)
+
+
+def _unit_noise(strike: float, length: int):
+    """Deterministic values in [0, 1), one per bar, without a generator per bar.
+
+    A stable per-strike seed expanded once, rather than constructing a generator
+    inside the loop — which cost 1.5 seconds on its own for a full history and
+    produced the same numbers anyway.
+    """
+    rng = np.random.default_rng(seed_of(strike, CALL))
+    return rng.random(length)
+
+
 def seed_of(strike: float, kind: str) -> int:
     """A stable seed for one strike and side.
 
@@ -347,8 +441,6 @@ def leg_bars(
 
     vol_floor = chain_iv(index_bars["close"]) if atm_iv is None else float(atm_iv)
     strike = float(strike)
-    rows: list[dict] = []
-    index: list[pd.Timestamp] = []
 
     # Open interest is anchored to the strike grid as it stands at the start of
     # the series, not re-derived per bar: an OI column that wandered with spot
@@ -356,50 +448,62 @@ def leg_bars(
     anchor_spot = float(index_bars["close"].iloc[0])
     anchor_atm = round(anchor_spot / STRIKE_STEP) * STRIKE_STEP
     offset = (strike - anchor_atm) / STRIKE_STEP
-    base_oi = _synthetic_oi(int(offset), CHAIN_STEP * 3, kind, np.random.default_rng(seed_of(strike, kind)))
+    base_oi = _synthetic_oi(
+        int(offset), CHAIN_STEP * 3, kind, np.random.default_rng(seed_of(strike, kind))
+    )
 
-    for stamp, bar in index_bars.iterrows():
-        moment = stamp.to_pydatetime() if hasattr(stamp, "to_pydatetime") else stamp
-        minutes = trading_minutes_to(moment, expiry)
-        years = years_from_minutes(minutes)
-        moneyness = ((strike - float(bar["close"])) / float(bar["close"])) * 10_000.0
-        iv = smile_iv(vol_floor, moneyness)
+    # Everything below is array arithmetic rather than a row loop. The loop was
+    # correct and cost ~40 seconds on a full history: one 120-microsecond
+    # session-clock call per bar per leg, plus iterrows and a fresh numpy
+    # generator per bar. The columns are identical; the price is a few hundred
+    # milliseconds.
+    closes = index_bars["close"].to_numpy(dtype="float64")
+    minutes = trading_minutes_array(index_bars.index, expiry)
+    years = minutes / TRADING_MINUTES_PER_YEAR
+    moneyness = ((strike - closes) / closes) * 10_000.0
+    iv = _smile_iv_array(vol_floor, moneyness)
 
-        opening = bs_price(float(bar["open"]), strike, iv, years, kind)
-        high = bs_price(float(bar["high"]), strike, iv, years, kind)
-        low = bs_price(float(bar["low"]), strike, iv, years, kind)
-        close = bs_price(float(bar["close"]), strike, iv, years, kind)
-        # A premium is monotone in spot for a call and decreasing for a put, so
-        # repricing the extremes the other way round would produce candles that
-        # contradict the index chart. Enforce it rather than trust the ordering.
-        high, low = max(high, low, opening, close), min(high, low, opening, close)
+    opening = bs_price_array(index_bars["open"].to_numpy(dtype="float64"), strike, iv, years, kind)
+    raw_high = bs_price_array(index_bars["high"].to_numpy(dtype="float64"), strike, iv, years, kind)
+    raw_low = bs_price_array(index_bars["low"].to_numpy(dtype="float64"), strike, iv, years, kind)
+    close = bs_price_array(closes, strike, iv, years, kind)
 
-        # A slow wobble plus a size proportional to how far the bar travelled:
-        # this is a proxy, and the activity features that consume it only need it
-        # to be busy when the market is busy.
-        travelled = abs(close - opening) / max(opening, 1e-9)
-        oi = base_oi * (1.0 + 0.06 * float(np.sin(len(index) / 9.0)) + 0.02 * float(rng_unit(strike, len(index))))
-        volume = base_oi * 0.15 * (1.0 + 40.0 * travelled)
+    # A candle's high must contain every premium the bar printed, and its low must
+    # contain none above it. Taking the extremes over all four rather than assuming
+    # the ordering needs no case analysis for calls versus puts — a call's premium
+    # is increasing in spot and a put's is decreasing, so the same reduction is
+    # correct for both without asking which it is.
+    body_top = np.maximum(opening, close)
+    body_bottom = np.minimum(opening, close)
+    high = np.maximum(np.maximum(raw_high, raw_low), body_top)
+    low = np.minimum(np.minimum(raw_high, raw_low), body_bottom)
 
-        index.append(stamp)
-        rows.append(
-            {
-                "open": opening,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": float(volume),
-                "oi": float(oi),
-                "spot": float(bar["close"]),
-                "delta": bs_delta(float(bar["close"]), strike, iv, years, kind),
-                "gamma": bs_gamma(float(bar["close"]), strike, iv, years),
-                "theta_per_minute": bs_theta_per_minute(float(bar["close"]), strike, iv, years),
-                "iv": iv,
-                "minutes_to_expiry": minutes,
-            }
-        )
+    # A slow wobble plus a size proportional to how far the bar travelled. This
+    # is a proxy, and the activity features that consume it only need it to be
+    # busy when the market is busy.
+    travelled = np.abs(close - opening) / np.maximum(opening, 1e-9)
+    steps = np.arange(len(closes), dtype="float64")
+    wobble = 1.0 + 0.06 * np.sin(steps / 9.0) + 0.02 * _unit_noise(strike, len(closes))
+    oi = base_oi * wobble
+    volume = base_oi * 0.15 * (1.0 + 40.0 * travelled)
 
-    frame = pd.DataFrame(rows, index=pd.DatetimeIndex(index, name="ts"))
+    frame = pd.DataFrame(
+        {
+            "open": opening,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+            "oi": oi,
+            "spot": closes,
+            "delta": bs_delta_array(closes, strike, iv, years, kind),
+            "gamma": bs_gamma_array(closes, strike, iv, years),
+            "theta_per_minute": bs_theta_array(closes, strike, iv, years),
+            "iv": iv,
+            "minutes_to_expiry": minutes,
+        },
+        index=index_bars.index,
+    )
     return frame[frame["close"] > 0].sort_index()
 
 

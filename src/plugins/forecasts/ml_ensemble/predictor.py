@@ -33,9 +33,16 @@ class Predictor:
     def load(self) -> Predictor:
         for horizon in self.horizons:
             try:
-                self.artifacts[horizon] = load_artifact(self.settings, horizon)
+                artifact = load_artifact(self.settings, horizon)
             except (FileNotFoundError, Exception) as exc:  # noqa: BLE001
                 self.load_errors[horizon] = str(exc)
+                continue
+            model = artifact.get("model")
+            if model is not None and hasattr(model, "for_single_row_inference"):
+                # Inference is one row at a time in the live engine, and a
+                # worker pool per call costs far more than it saves.
+                model.for_single_row_inference()
+            self.artifacts[horizon] = artifact
         return self
 
     @property

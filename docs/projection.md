@@ -151,8 +151,9 @@ of several seconds are normal on an index feed.
 A bar close also triggers a refresh immediately, because a bar close changes the
 volatility, the trend and the ensemble view all at once.
 
-Measured cost of one refresh across a three-leg board: **~10–17 ms**, against a
-1,000 ms budget.
+Measured cost of one refresh across a three-leg board: **~7–9 ms**, against a
+1,000 ms budget. Startup is ~0.6s on a 45,000-bar cache, most of it warming three
+instruments rather than projecting.
 
 A failed refresh is logged and skipped. A projection is not worth taking the
 dashboard down for.

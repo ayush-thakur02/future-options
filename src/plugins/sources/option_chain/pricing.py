@@ -21,7 +21,14 @@ most single-leg long-premium scalps are not trades at all.
 
 from __future__ import annotations
 
-from math import erf, exp, log, pi, sqrt
+from math import log, pi, sqrt
+
+import numpy as np
+
+try:  # scipy is already present as a scikit-learn dependency
+    from scipy.special import erf as _erf_array
+except ImportError:  # pragma: no cover - the dependency is not optional in practice
+    _erf_array = None
 
 CALL = "CE"
 PUT = "PE"
@@ -41,12 +48,42 @@ def years_from_minutes(minutes: float) -> float:
     return max(float(minutes), 0.0) / TRADING_MINUTES_PER_YEAR
 
 
+def norm_cdf(value):
+    """Standard normal CDF, scalar or array.
+
+    One implementation for both, so a premium priced in a vector cannot disagree
+    with the same premium priced in a loop. Rolling a separate rational
+    approximation for the array path would drift from ``math.erf`` at the 1e-7
+    level, which is exactly the kind of difference that shows up as a leg chart
+    that contradicts its own quote.
+    """
+    if _erf_array is None:  # pragma: no cover - exercised only without scipy
+        from math import erf
+
+        if np.isscalar(value) or isinstance(value, float):
+            return 0.5 * (1.0 + erf(value / sqrt(2.0)))
+        return np.array([0.5 * (1.0 + erf(item / sqrt(2.0))) for item in np.ravel(value)]).reshape(
+            np.shape(value)
+        )
+
+    scaled = np.asarray(value, dtype="float64") / sqrt(2.0)
+    result = 0.5 * (1.0 + _erf_array(scaled))
+    return float(result) if np.isscalar(value) or np.ndim(value) == 0 else result
+
+
+def norm_pdf(value):
+    """Standard normal density, scalar or array."""
+    array = np.asarray(value, dtype="float64")
+    result = np.exp(-0.5 * array * array) / sqrt(2.0 * pi)
+    return float(result) if np.ndim(value) == 0 else result
+
+
 def _norm_cdf(value: float) -> float:
-    return 0.5 * (1.0 + erf(value / sqrt(2.0)))
+    return norm_cdf(value)
 
 
 def _norm_pdf(value: float) -> float:
-    return exp(-0.5 * value * value) / sqrt(2.0 * pi)
+    return norm_pdf(value)
 
 
 def _d1_d2(spot: float, strike: float, iv: float, years: float) -> tuple[float, float]:
@@ -73,6 +110,31 @@ def bs_price(spot: float, strike: float, iv: float, years: float, kind: str) -> 
     return strike * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
 
 
+def bs_price_array(spot, strike: float, iv, years, kind: str):
+    """Black-Scholes over arrays of spot, vol and time.
+
+    The scalar path below is 4 evaluations per bar per leg; a session's worth of
+    bars is a hundred thousand of them, and the Python loop around it dominated
+    startup. This is the same formula without the loop.
+    """
+    spot = np.asarray(spot, dtype="float64")
+    iv = np.asarray(iv, dtype="float64")
+    years = np.asarray(years, dtype="float64")
+
+    span = np.maximum(iv * np.sqrt(np.maximum(years, MIN_YEARS)), 1e-9)
+    d1 = (np.log(spot / strike) + 0.5 * span * span) / span
+    d2 = d1 - span
+
+    if is_call(kind):
+        price = spot * norm_cdf(d1) - strike * norm_cdf(d2)
+    else:
+        price = strike * norm_cdf(-d2) - spot * norm_cdf(-d1)
+
+    intrinsic = np.maximum(spot - strike, 0.0) if is_call(kind) else np.maximum(strike - spot, 0.0)
+    expired = years <= MIN_YEARS
+    return np.where(expired, intrinsic, np.maximum(price, 0.0))
+
+
 def bs_delta(spot: float, strike: float, iv: float, years: float, kind: str) -> float:
     """Sensitivity of premium to a one-point move in the underlying.
 
@@ -88,6 +150,37 @@ def bs_delta(spot: float, strike: float, iv: float, years: float, kind: str) -> 
 
     d1, _ = _d1_d2(spot, strike, iv, years)
     return _norm_cdf(d1) if is_call(kind) else _norm_cdf(d1) - 1.0
+
+
+def bs_delta_array(spot, strike: float, iv, years, kind: str):
+    """Delta over arrays of spot, vol and time."""
+    spot = np.asarray(spot, dtype="float64")
+    iv = np.asarray(iv, dtype="float64")
+    years = np.asarray(years, dtype="float64")
+    span = np.maximum(iv * np.sqrt(np.maximum(years, MIN_YEARS)), 1e-9)
+    d1 = (np.log(spot / strike) + 0.5 * span * span) / span
+    return norm_cdf(d1) if is_call(kind) else norm_cdf(d1) - 1.0
+
+
+def bs_gamma_array(spot, strike: float, iv, years):
+    """Gamma over arrays. Identical for a call and a put."""
+    spot = np.asarray(spot, dtype="float64")
+    iv = np.asarray(iv, dtype="float64")
+    years = np.asarray(years, dtype="float64")
+    span = np.maximum(iv * np.sqrt(np.maximum(years, MIN_YEARS)), 1e-9)
+    d1 = (np.log(spot / strike) + 0.5 * span * span) / span
+    return norm_pdf(d1) / (spot * span)
+
+
+def bs_theta_array(spot, strike: float, iv, years):
+    """Theta per trading minute, over arrays. Negative for a long option."""
+    spot = np.asarray(spot, dtype="float64")
+    iv = np.asarray(iv, dtype="float64")
+    years = np.asarray(years, dtype="float64")
+    span = np.maximum(iv * np.sqrt(np.maximum(years, MIN_YEARS)), 1e-9)
+    d1 = (np.log(spot / strike) + 0.5 * span * span) / span
+    per_year = -(spot * norm_pdf(d1) * iv) / (2.0 * np.sqrt(np.maximum(years, MIN_YEARS)))
+    return per_year / TRADING_MINUTES_PER_YEAR
 
 
 def bs_gamma(spot: float, strike: float, iv: float, years: float) -> float:
@@ -152,6 +245,12 @@ def breakeven_move_bps(premium: float, delta: float, spot: float) -> float:
 
 __all__ = [
     "CALL",
+    "bs_delta_array",
+    "bs_gamma_array",
+    "bs_price_array",
+    "bs_theta_array",
+    "norm_cdf",
+    "norm_pdf",
     "MIN_YEARS",
     "PUT",
     "TRADING_MINUTES_PER_DAY",

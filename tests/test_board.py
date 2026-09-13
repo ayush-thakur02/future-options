@@ -448,3 +448,41 @@ def test_leg_strip_for_the_index_reports_conviction(board) -> None:
 
     plain = Text.from_markup(_strip(board.snapshot().leg("INDEX")).markup).plain
     assert "conv" in plain
+
+
+def test_the_board_carries_only_the_history_the_engines_use(bars) -> None:
+    """A cold start must not price or warm more bars than anything reads.
+
+    The engines discard everything past their feature window and the charts show a
+    fraction of it, so a board built from a multi-year cache would do seconds of
+    work on three instruments and throw all of it away.
+    """
+    from runtime.engine import FEATURE_WINDOW
+
+    long_history = generate_candles(days=60, seed=44)
+    assert len(long_history) > FEATURE_WINDOW
+
+    built = MarketBoard(Kernel.bootstrap(Settings()), bar_minutes=1).build(long_history)
+
+    assert len(built.index_bars) == FEATURE_WINDOW
+    for leg in built.legs:
+        assert len(leg.engine.history) <= FEATURE_WINDOW
+
+
+def test_opening_the_board_is_not_slow() -> None:
+    """A guard against a return to a forty-second startup, with a wide margin.
+
+    The loose bound is the point: it fails on seconds, not on milliseconds, so it
+    catches a regression to the loop-per-bar behaviour without flaking.
+    """
+    import time
+
+    from plugins.sources.simulated.series import generate_candles as candles
+
+    history = candles(days=20, seed=45)
+    started = time.perf_counter()
+    board = MarketBoard(Kernel.bootstrap(Settings()), bar_minutes=1).build(history)
+    elapsed = time.perf_counter() - started
+
+    assert len(board.legs) == 3
+    assert elapsed < 5.0, f"opening the board took {elapsed:.1f}s"

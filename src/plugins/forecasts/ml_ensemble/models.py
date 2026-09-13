@@ -242,6 +242,23 @@ class DirectionEnsemble:
     def predict(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
         return (self.predict_proba(X) >= threshold).astype(int)
 
+    def for_single_row_inference(self) -> DirectionEnsemble:
+        """Stop the estimators spawning a worker pool to predict one row.
+
+        ``ExtraTrees(n_jobs=-1)`` runs its trees through joblib's process backend,
+        so every ``predict_proba`` on a single row starts a loky pool — around
+        200ms of process startup, per call, per instrument, to parallelise work
+        that takes microseconds. Training keeps its parallelism; this only
+        touches inference, where the rows to share out number exactly one.
+        """
+        for model in self.models.values():
+            for _, step in getattr(model, "steps", []) or []:
+                if hasattr(step, "n_jobs"):
+                    step.n_jobs = 1
+            if hasattr(model, "n_jobs"):
+                model.n_jobs = 1
+        return self
+
     def member_probabilities(self, X: pd.DataFrame) -> pd.DataFrame:
         """Per-model probabilities — lets the UI show where disagreement sits."""
         return pd.DataFrame(

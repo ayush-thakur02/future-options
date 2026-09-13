@@ -346,7 +346,7 @@ def dashboard(
             "Set Upstox credentials for live data.\n"
         )
     try:
-        session.bootstrap()
+        session.bootstrap(progress=lambda message: console.print(f"[dim]{message}[/]"))
         console.print(f"[dim]{session.describe()}[/]")
         asyncio.run(session.run())
     except KeyboardInterrupt:

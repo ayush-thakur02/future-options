@@ -31,7 +31,7 @@ from core.settings import Settings
 from core.types import BoardSnapshot, LegSnapshot, Tick
 from kernel import Kernel
 
-from .engine import Engine
+from .engine import FEATURE_WINDOW, Engine
 
 INDEX_LABEL = "INDEX"
 CALL_KIND = "CE"
@@ -77,12 +77,18 @@ class MarketBoard:
         kernel: Kernel,
         bar_minutes: int | None = None,
         roll_strikes: float = ROLL_STRIKES,
+        history_bars: int = FEATURE_WINDOW,
         logger: logging.Logger | None = None,
     ) -> None:
         self.kernel = kernel
         self.settings: Settings = kernel.settings
         self.bar_minutes = int(bar_minutes or kernel.settings.bar_minutes)
         self.roll_strikes = float(roll_strikes)
+        # How much history each instrument carries. The engines discard anything
+        # beyond their feature window anyway, and the charts show a fraction of
+        # that, so pricing premium candles across a multi-year cache would be work
+        # thrown away — three engines' worth of it, on every start and every roll.
+        self.history_bars = int(history_bars)
         self.log = logger or logging.getLogger("niftypulse.board")
 
         self.source = kernel.capability("option_chain") if kernel.registry.capabilities().get("option_chain") else None
@@ -109,6 +115,7 @@ class MarketBoard:
 
     def build(self, index_bars: pd.DataFrame) -> MarketBoard:
         """Warm every instrument up, so the first frame is already readable."""
+        index_bars = index_bars.tail(self.history_bars) if index_bars is not None else index_bars
         self.index_bars = index_bars
         index_engine = Engine(
             self.kernel,
