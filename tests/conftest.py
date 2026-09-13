@@ -52,3 +52,23 @@ def trend_bars() -> pd.DataFrame:
 @pytest.fixture(scope="session")
 def rng() -> np.random.Generator:
     return np.random.default_rng(SEED)
+
+
+@pytest.fixture(scope="session")
+def offline_session():
+    """A composed session on generated data, for the runtime tests.
+
+    Session-scoped because building it loads the kernel and warms the engine,
+    which is the expensive part and is identical for every test that reads from
+    it. Tests that need to mutate it build their own.
+    """
+    from core.settings import Settings
+    from kernel import Kernel
+    from runtime.session import Session, SessionConfig
+
+    session = Session(
+        kernel=Kernel.bootstrap(Settings()),
+        config=SessionConfig(offline=True, days=3, refresh_history=False),
+    )
+    session.bootstrap()
+    return session

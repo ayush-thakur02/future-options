@@ -13,6 +13,8 @@ fast replay, and a test that renders a synthetic frame.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from rich.console import Console
 from rich.layout import Layout
@@ -49,6 +51,7 @@ class TerminalRenderer:
         self.refresh = float(refresh)
         self.forecaster = forecaster
         self.console = console or Console()
+        self._live = None
 
     # ------------------------------------------------------------- composition
 
@@ -91,22 +94,45 @@ class TerminalRenderer:
         """Print a single frame, without taking over the screen."""
         self.console.print(self.build(snapshot, status))
 
+    @contextmanager
+    def live(self) -> Iterator[None]:
+        """Take over the screen for the duration of the block.
+
+        Split from the loop on purpose: the session owns the cadence and may be
+        driving several tasks, so the renderer exposes "start drawing" and
+        "draw this frame" rather than a loop of its own.
+        """
+        with Live(
+            self._blank(),
+            console=self.console,
+            screen=True,
+            refresh_per_second=max(int(1.0 / max(self.refresh, 1e-6)), 4),
+            transient=False,
+        ) as handle:
+            self._live = handle
+            try:
+                yield
+            finally:
+                self._live = None
+
+    def live_update(self, snapshot: MarketSnapshot, status: str = "") -> None:
+        """Push one frame to the live display. A no-op when not in a live block."""
+        if self._live is not None:
+            self._live.update(self.build(snapshot, status))
+
+    def _blank(self):
+        from rich.console import Group
+
+        return Group()
+
     def run(self, snapshot_source, status_source=None, refresh: float | None = None) -> None:
         """Render ``snapshot_source()`` until interrupted."""
         interval = self.refresh if refresh is None else float(refresh)
-        with Live(
-            self.build(snapshot_source(), status_source() if status_source else ""),
-            console=self.console,
-            screen=True,
-            refresh_per_second=max(int(1.0 / max(interval, 1e-6)), 4),
-            transient=False,
-        ) as live:
+        with self.live():
             try:
                 while True:
-                    live.update(
-                        self.build(
-                            snapshot_source(), status_source() if status_source else ""
-                        )
+                    self.live_update(
+                        snapshot_source(), status_source() if status_source else ""
                     )
                     time.sleep(interval)
             except KeyboardInterrupt:

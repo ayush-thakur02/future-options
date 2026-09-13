@@ -37,6 +37,28 @@ def _intraday_volume_shape(bars_per_day: int) -> np.ndarray:
     return 0.45 + 0.9 * ((x - 0.5) ** 2) * 4.0
 
 
+def rebase(frame: pd.DataFrame, price: float) -> pd.DataFrame:
+    """Scale a series so it opens at ``price``.
+
+    Used to continue a replay where real history left off. A *ratio* rather than
+    an offset: the series is multiplicative, and shifting it by a constant would
+    change the size of every move in it, which is the one thing the generated
+    shape is for.
+    """
+    if frame.empty or price <= 0:
+        return frame
+    first = float(frame["open"].iloc[0])
+    if first <= 0:
+        return frame
+    factor = float(price) / first
+    if not 0.1 < factor < 10.0:  # a wild factor means the wrong frame was passed
+        return frame
+    scaled = frame.copy()
+    for column in ("open", "high", "low", "close"):
+        scaled[column] = scaled[column] * factor
+    return scaled
+
+
 def generate_candles(
     days: int = 120,
     bar_minutes: int = 1,

@@ -1,7 +1,11 @@
-"""Live inference engine.
+"""The engine: market data in, state out, at two cadences.
 
-Wires the pieces together: market data in, calibrated forecasts and strategy
-signals out.
+A tick updates the forming candle and the tick momentum. A **bar close** is the
+expensive moment: features are rebuilt, every strategy is scored, the model
+predicts, and the projections that targeted this bar are scored against what
+actually happened. In between, the projected path is refreshed on its own clock —
+see :mod:`runtime.nowcast` — so the blue candles move every second instead of
+once a minute.
 
 One subtlety worth stating. Features are recomputed over a rolling window of
 recent bars rather than the entire history, because rebuilding 120 days of
@@ -11,6 +15,9 @@ the residual influence of the seed value is around 1e-8 — which keeps live
 features numerically identical to the ones the model was trained on. A shorter
 window would introduce a train/serve skew that silently degrades every
 prediction.
+
+The engine holds no feed and no renderer. Both arrive through the kernel, so live
+and simulated runs are the same object driven by different sources.
 """
 
 from __future__ import annotations
@@ -23,9 +30,11 @@ import pandas as pd
 
 from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
-from core.types import MarketSnapshot, Prediction, Signal, Tick
+from core.types import ForecastCandle, MarketSnapshot, Prediction, Signal, Tick
 from kernel import Kernel
 from plugins.strategies import CompositeStrategy, StrategyCatalog, StrategyContext
+
+from .conviction import blend, trend_conviction
 
 FEATURE_WINDOW = 2000
 # Bars handed to the strategy layer. Strategies look back at most ~100 bars, so
@@ -34,10 +43,13 @@ SIGNAL_WINDOW = 600
 # Named in the signal panel. More than a handful is unreadable, and these are the
 # ones whose disagreement with the ensemble is worth seeing.
 HIGHLIGHTED = ("ema_trend", "supertrend", "macd_momentum", "rsi_reversion", "vwap_reversion", "squeeze_release")
+# Bars the projection needs before it will draw anything. Two bars of history
+# would produce a path, just not a meaningful one.
+MIN_PROJECTION_BARS = 15
 
 
-class LiveEngine:
-    """Maintains rolling market state and produces forecasts on each bar close."""
+class Engine:
+    """Rolling market state, forecasts on bar close, projected path every second."""
 
     def __init__(
         self,
@@ -65,6 +77,9 @@ class LiveEngine:
         self.aggregator = kernel.build(
             "aggregator:candle_builder", bar_minutes=self.bar_minutes
         )
+        self.forecaster = (
+            kernel.capability("projection") if kernel.registry.capabilities().get("projection") else None
+        )
         self.history: pd.DataFrame = pd.DataFrame()
         self.features: pd.DataFrame = pd.DataFrame()
         self.signals: list[Signal] = []
@@ -75,11 +90,17 @@ class LiveEngine:
         self.tick_count: int = 0
         self.bar_count: int = 0
         self.status: str = "initialising"
+        self.projections: list[ForecastCandle] = []
+        # The ensemble's view as of the last bar close: the slow half of the
+        # conviction the projection runs on.
+        self.slow_conviction: float = 0.0
+        self.conviction: float = 0.0
+        self.projection_refreshes: int = 0
         self._listeners: list[Callable[[MarketSnapshot], None]] = []
 
     # ------------------------------------------------------------- bootstrap
 
-    def bootstrap(self, history: pd.DataFrame | None = None, days: int = 20) -> LiveEngine:
+    def bootstrap(self, history: pd.DataFrame | None = None, days: int = 20) -> Engine:
         """Seed the engine with recent bars so indicators are warm immediately."""
         if history is not None:
             self.history = normalize_candles(history)
@@ -101,11 +122,18 @@ class LiveEngine:
     # ----------------------------------------------------------------- ticks
 
     def on_tick(self, tick: Tick) -> bool:
-        """Feed one tick. Returns True when a bar closed and state was refreshed."""
+        """Feed one tick. Returns True when a bar closed and state was refreshed.
+
+        Cheap on purpose: this runs at tick rate, and on an index feed that can be
+        thousands of updates a minute. Only the anchor price and the momentum
+        estimate move here; everything expensive waits for the bar close.
+        """
         self.tick_count += 1
         self.last_price = tick.ltp or tick.mid
         if tick.close_prev:
             self.prev_close = tick.close_prev
+        if self.forecaster is not None:
+            self.forecaster.on_tick(tick)
 
         closed = self.aggregator.on_tick(tick)
         if closed is None:
@@ -113,6 +141,13 @@ class LiveEngine:
 
         self._append_closed_bar(closed)
         self._recompute()
+        # Score whatever the projections said about the bar that just closed,
+        # then redraw: a bar close changes the volatility, the trend and the
+        # ensemble view all at once, so the path must not wait for the next tick
+        # of the refresh clock.
+        if self.forecaster is not None:
+            self.forecaster.observe_bar(closed["ts"], float(closed["close"]))
+            self.refresh_projection()
         self._notify()
         return True
 
@@ -142,6 +177,7 @@ class LiveEngine:
         self.signals = self._collect_signals(context)
         self.predictions = self._collect_predictions()
         self.regime = self._current_regime()
+        self.slow_conviction = self._ensemble_view(context)
         self.status = "live"
 
     def _collect_signals(self, context: StrategyContext) -> list[Signal]:
@@ -195,10 +231,72 @@ class LiveEngine:
         except Exception:
             return "unknown"
 
+    # ------------------------------------------------------------ projection
+
+    def refresh_projection(self) -> bool:
+        """Rebuild the projected path from the live price and the current view.
+
+        Called on a fixed cadence rather than per tick: the anchor and the tick
+        momentum already move with the tape, and recomputing the whole path
+        thousands of times a minute to move it by a hundredth of a point is work
+        nobody can see. Returns whether a path was produced.
+        """
+        if self.forecaster is None:
+            return False
+
+        bars = self.market_bars()
+        if len(bars) < MIN_PROJECTION_BARS:
+            return False
+
+        anchor = float(self.last_price or bars["close"].iloc[-1])
+        fast = trend_conviction(bars)
+        self.conviction = blend(self.slow_conviction, fast)
+
+        # Stamped from the data's own clock, not the wall clock. Live and replay
+        # coincide (ticks arrive at the current time), but a snapshot of a cached
+        # session would otherwise draw bars at 15:29 and projections at 20:34 —
+        # a chart that contradicts itself about when "now" is.
+        self.projections = self.forecaster.refresh(
+            bars=bars,
+            anchor=anchor,
+            conviction=self.conviction,
+            now=bars.index[-1].to_pydatetime(),
+            bar_minutes=self.bar_minutes,
+        )
+        self.projection_refreshes += 1
+        return bool(self.projections)
+
+    def market_bars(self) -> pd.DataFrame:
+        """Closed bars plus the forming one — what the projection is drawn from.
+
+        The forming bar matters: without it a projection taken 20 seconds into a
+        new bar would ignore the twenty seconds of price that have already
+        happened, and start from the previous close instead of the current price.
+        """
+        forming = self.aggregator.snapshot_frame(include_current=True)
+        if forming.empty:
+            return self.history
+        if self.history.empty:
+            return forming
+        overlap = self.history[~self.history.index.isin(forming.index)]
+        merged = pd.concat([overlap, forming]).sort_index()
+        return merged.tail(self.feature_window)
+
+    def _ensemble_view(self, context: StrategyContext) -> float:
+        """The blended strategy score at the latest bar, in [-1, 1]."""
+        try:
+            scores = self.strategy.score(context).dropna()
+        except Exception:  # noqa: BLE001 — an unusable ensemble means no view
+            return 0.0
+        return float(scores.iloc[-1]) if len(scores) else 0.0
+
     # -------------------------------------------------------------- snapshot
 
     def snapshot(self) -> MarketSnapshot:
-        bars = self.aggregator.snapshot_frame(include_current=True)
+        # History plus the forming bar. The aggregator alone would show a single
+        # candle the moment the first tick of a session arrived, because it starts
+        # empty and the history lives beside it.
+        bars = self.market_bars()
         if bars.empty:
             bars = self.history.tail(120)
 
@@ -220,6 +318,9 @@ class LiveEngine:
             predictions=self.predictions,
             regime=self.regime,
             indicators=indicators,
+            projections=self.projections,
+            conviction=self.conviction,
+            projection_ts=self.forecaster.updated_at if self.forecaster is not None else None,
         )
 
     # -------------------------------------------------------------- listeners
@@ -236,6 +337,10 @@ class LiveEngine:
                 listener(snapshot)
             except Exception:
                 continue
+
+    def publish(self) -> None:
+        """Hand the current state to every listener. Driven by the refresh clock."""
+        self._notify()
 
     # ----------------------------------------------------------------- feeds
 

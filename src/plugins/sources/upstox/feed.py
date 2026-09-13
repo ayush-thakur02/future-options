@@ -1,5 +1,13 @@
 """Upstox Market Data Feed v3 WebSocket client.
 
+The feed contract — authorization flow, the four subscription modes, the
+``Ticker``/``FeedResponse`` shapes — is documented in the installed skill at
+``.agents/skills/upstox/references/websocket.md``. The one detail worth checking
+against your account before going live is the authorize path: this client calls
+``/v3/feed/market-data-feed/authorize``, which is where the v3 proto feed is
+issued, while the SDK's own ``WebsocketApi.get_market_data_feed_authorize`` is
+the v2 endpoint. A 404 here means the account is on the other one.
+
 Flow: fetch a single-use authorized socket URI, connect, subscribe, then decode
 protobuf frames into :class:`Tick` objects.
 

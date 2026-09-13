@@ -1,10 +1,15 @@
 """Upstox REST client for historical, intraday, and snapshot market data.
 
-Reference: https://upstox.com/developer/api-documentation/v3/get-historical-candle-data
+The v3 historical endpoint caps a single request at about a month of 1–15 minute
+candles, so anything longer is transparently chunked and stitched. A token bucket
+keeps us well inside the published limits.
 
-The v3 historical endpoint caps a single request at one month of 1–15 minute
-candles, so anything longer is transparently chunked and stitched. A token
-bucket keeps us inside the published per-minute rate limit.
+The API surface implemented here is documented, with signatures verified against
+the official SDK, in the installed skill at
+``.agents/skills/upstox/references/market-data.md`` (endpoints, units, intervals)
+and ``.../errors.md`` (status and UDAPI codes). Read those before changing a URL
+or adding an endpoint — ``HistoryV3Api`` takes no ``api_version`` and the v2
+classes take one, and mixing the two is the most common source of errors.
 """
 
 from __future__ import annotations
@@ -26,7 +31,20 @@ QUOTE_URL = f"{API_BASE}/v2/market-quote/quotes"
 
 HISTORY_START = date(2022, 1, 1)
 
-# Published limits: 25 req/s, 250 req/min. Stay comfortably underneath.
+# Intervals the historical endpoint accepts, per unit. Passing anything else is a
+# 400, so it is checked here rather than discovered as a failed backfill.
+VALID_INTERVALS: dict[str, range] = {
+    "minutes": range(1, 301),
+    "hours": range(1, 6),
+    "days": range(1, 2),
+    "weeks": range(1, 2),
+    "months": range(1, 2),
+}
+
+# Published limits are 50 requests/second and 500/minute for market data, but a
+# backfill is a bulk operation and there is nothing to gain from running at the
+# ceiling. These stay far underneath, which also leaves headroom for a live feed
+# running in the same process.
 _MAX_PER_SECOND = 8
 _MAX_PER_MINUTE = 180
 
@@ -115,13 +133,19 @@ class UpstoxREST:
         from_date: date,
         to_date: date,
     ) -> pd.DataFrame:
-        """One raw historical request (subject to the provider's window limits)."""
+        """One raw historical request (subject to the provider's window limits).
+
+        Note the endpoint takes ``to_date`` before ``from_date``. It is not a typo
+        here, and it is an easy thing to "fix" into a broken request.
+        """
+        _check_interval(unit, interval)
         url = f"{HISTORY_URL}/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
         payload = self._get(url)
         return _parse_candles(payload)
 
     def fetch_intraday(self, instrument_key: str, unit: str = "minutes", interval: int = 1) -> pd.DataFrame:
         """Candles for the current trading day only."""
+        _check_interval(unit, interval)
         url = f"{INTRADAY_URL}/{instrument_key}/{unit}/{interval}"
         payload = self._get(url)
         return _parse_candles(payload)
@@ -174,6 +198,18 @@ class UpstoxREST:
         payload = self._get(QUOTE_URL, params={"instrument_key": instrument_key})
         data = payload.get("data", {})
         return next(iter(data.values()), {})
+
+
+def _check_interval(unit: str, interval: int) -> None:
+    """Fail early on an interval the endpoint will reject with a 400."""
+    allowed = VALID_INTERVALS.get(unit)
+    if allowed is None:
+        raise ValueError(f"unsupported unit {unit!r}; expected one of {sorted(VALID_INTERVALS)}")
+    if interval not in allowed:
+        raise ValueError(
+            f"interval {interval} is not valid for unit {unit!r} "
+            f"(allowed {allowed.start}..{allowed.stop - 1})"
+        )
 
 
 def _chunk_days(unit: str, interval: int) -> int:

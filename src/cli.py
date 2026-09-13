@@ -19,7 +19,6 @@ from core.calendar import TradingCalendar
 from core.settings import Settings, load_settings
 from core.version import __version__
 from kernel import BUILTIN_PACKAGE, Kernel
-from live import LiveEngine
 from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
 from plugins.forecasts.ml_ensemble.trainer import (
     Trainer,
@@ -30,6 +29,7 @@ from plugins.forecasts.ml_ensemble.trainer import (
 )
 from plugins.strategies import StrategyCatalog, StrategyContext
 from runtime.bars import BarLoader
+from runtime.session import Session, SessionConfig
 
 app = typer.Typer(
     name="niftypulse",
@@ -308,79 +308,79 @@ def _resolve_scores(strategy: str, settings, bars, horizon: int):
 
 @app.command()
 def dashboard(
-    offline: bool = typer.Option(False, "--offline", help="Replay synthetic ticks instead of live"),
+    offline: bool = typer.Option(False, "--offline", help="Replay simulated ticks instead of live"),
     timeframe: int = typer.Option(1, help="Bar size in minutes"),
-    speed: float = typer.Option(0.02, help="Replay delay between bars, in seconds"),
-    refresh: float = typer.Option(1.0, help="Dashboard refresh interval"),
+    speed: float = typer.Option(1.0, help="Replay speed against the clock (1.0 = real time)"),
+    refresh: float = typer.Option(1.0, help="Seconds between frames"),
+    nowcast: float = typer.Option(1.0, help="Seconds between projection refreshes"),
+    bars_ahead: int = typer.Option(3, help="How many candles to project"),
 ) -> None:
-    """Run the live terminal dashboard."""
+    """Run the live dashboard: candles, and the next three projected every second."""
     settings = _settings()
     settings.bar_minutes = timeframe
-    kernel = Kernel.bootstrap(settings)
+    if bars_ahead:
+        settings.plugin_config.setdefault("forecast:projection", {})["bars_ahead"] = bars_ahead
 
-    engine = LiveEngine(kernel, bar_minutes=timeframe, calendar=TradingCalendar())
+    session = Session(
+        kernel=Kernel.bootstrap(settings),
+        config=SessionConfig(
+            offline=offline,
+            timeframe=timeframe,
+            refresh=refresh,
+            nowcast_interval=nowcast,
+            speed=speed,
+        ),
+    )
 
-    predictor = engine.predictor
-    if predictor is not None and predictor.is_ready:
-        console.print(f"[dim]models loaded: {predictor.describe()}[/]")
+    if session.live:
+        console.print("[cyan]live Upstox feed[/] — ticks stream as they print\n")
     else:
-        console.print("[yellow]no trained models — forecasts disabled. Run `niftypulse train`.[/]")
+        console.print(
+            "[cyan]simulated feed[/] — generated ticks, paced against the clock. "
+            "Set Upstox credentials for live data.\n"
+        )
+    console.print(f"[dim]{session.describe()}[/]")
 
-    broker = kernel.build("source:upstox")
-    if offline or not broker.is_configured:
-        _run_offline_dashboard(kernel, engine, speed, refresh, timeframe)
-    else:
-        _run_live_dashboard(kernel, engine, refresh, timeframe)
-
-
-def _run_offline_dashboard(kernel, engine, speed: float, refresh: float, timeframe: int) -> None:
-    from plugins.renderers.terminal import TerminalRenderer
-
-    console.print("[cyan]offline replay mode[/] — set up Upstox credentials for live data\n")
-    market = kernel.build("source:simulated", days=5)
-    bars = market.candles(days=5, bar_minutes=timeframe)
-    engine.bootstrap(history=bars)
-    ticks = market.ticks(bars, ticks_per_bar=6)
-
-    dash = TerminalRenderer(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
-    asyncio.run(_replay_loop(engine, ticks, dash, speed))
+    try:
+        session.bootstrap()
+        asyncio.run(session.run())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        console.print("[green]dashboard stopped[/]")
 
 
-async def _replay_loop(engine, ticks, dash, speed: float) -> None:
-    from rich.live import Live
+@app.command()
+def snapshot(
+    rows: int = typer.Option(60, help="Bars to show in the chart"),
+    bars_ahead: int = typer.Option(3, help="How many candles to project"),
+    offline: bool = typer.Option(True, "--offline/--live", help="Use simulated bars"),
+    timeframe: int = typer.Option(1, help="Bar size in minutes"),
+) -> None:
+    """Render one frame to stdout, with the projected candles, and exit.
 
-    with Live(console=dash.console, screen=True, refresh_per_second=8, transient=False) as live:
-        try:
-            for snapshot in engine.replay(ticks):
-                live.update(dash.build(snapshot, engine.status))
-                await asyncio.sleep(speed)
-        except KeyboardInterrupt:
-            pass
-    console.print("[green]replay finished[/]")
+    Useful when there is no interactive terminal — in a pipe, in CI, or when
+    checking what the projection looks like without waiting for a clock.
+    """
+    settings = _settings()
+    settings.bar_minutes = timeframe
+    if bars_ahead:
+        settings.plugin_config.setdefault("forecast:projection", {})["bars_ahead"] = bars_ahead
 
+    session = Session(
+        kernel=Kernel.bootstrap(settings),
+        config=SessionConfig(offline=offline, timeframe=timeframe, days=3),
+    )
+    session.bootstrap()
+    session.engine.refresh_projection()
 
-def _run_live_dashboard(kernel, engine, refresh: float, timeframe: int) -> None:
-    from plugins.renderers.terminal import TerminalRenderer
-
-    bars = BarLoader(kernel).load(days=15, refresh=True)
-    engine.bootstrap(history=bars)
-    dash = TerminalRenderer(symbol=engine.settings.symbol, timeframe=f"{timeframe}m", refresh=refresh)
-    asyncio.run(_live_loop(engine, dash, refresh))
-
-
-async def _live_loop(engine, dash, refresh: float) -> None:
-    from rich.live import Live
-
-    feed_task = asyncio.create_task(engine.run_live())
-    with Live(console=dash.console, screen=True, refresh_per_second=2, transient=False) as live:
-        try:
-            while True:
-                live.update(dash.build(engine.snapshot(), engine.status))
-                await asyncio.sleep(refresh)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
-        finally:
-            feed_task.cancel()
+    frame = session.engine.snapshot()
+    frame.candles = frame.candles.tail(rows)
+    session.renderer.show(frame, session.engine.status)
+    console.print(f"[dim]{session.describe()}[/]")
+    stats = session.engine.forecaster
+    if stats is not None:
+        console.print(f"[dim]projection: {stats.summary} · {stats.tracker.summary()}[/]")
 
 
 # ---------------------------------------------------------------- strategies
