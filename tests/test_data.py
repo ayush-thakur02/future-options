@@ -1,4 +1,8 @@
-"""Tests for data ingestion: aggregation, resampling, and the candle store."""
+"""Tests for data ingestion: aggregation, resampling, and the candle store.
+
+The store's own partitioning behaviour has a test module of its own; what is here
+is the part that belongs to ingestion — that what comes out matches what went in.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
 from core.types import Direction, Tick
 from plugins.aggregators.candle_builder import CandleAggregator, bar_start
-from plugins.sources.history import CandleStore
+from plugins.sources.history import PartitionedStore
 from plugins.sources.history.resample import resample_ohlcv
 from plugins.sources.simulated.series import generate_candles
 
@@ -139,8 +143,8 @@ def test_resample_is_identity_for_one_minute(bars: pd.DataFrame) -> None:
 
 
 def test_store_roundtrip(tmp_path, bars: pd.DataFrame) -> None:
-    store = CandleStore(tmp_path / "candles.parquet")
-    store.append(bars)
+    store = PartitionedStore(tmp_path, "NSE_INDEX|Nifty 50")
+    store.write(bars)
 
     loaded = store.load()
     assert len(loaded) == len(bars)
@@ -148,9 +152,9 @@ def test_store_roundtrip(tmp_path, bars: pd.DataFrame) -> None:
 
 
 def test_store_deduplicates(tmp_path, bars: pd.DataFrame) -> None:
-    store = CandleStore(tmp_path / "candles.parquet")
-    store.append(bars)
-    store.append(bars)
+    store = PartitionedStore(tmp_path, "NSE_INDEX|Nifty 50")
+    store.write(bars)
+    store.write(bars)
 
     assert store.row_count() == len(bars)
 
@@ -164,20 +168,20 @@ def test_store_append_updates_existing(tmp_path) -> None:
             index=index,
         )
     )
-    store = CandleStore(tmp_path / "c.parquet")
-    store.append(first)
+    store = PartitionedStore(tmp_path, "NSE_INDEX|Nifty 50")
+    store.write(first)
 
     revised = first.copy()
     revised["close"] = 2.0
-    store.append(revised)
+    store.write(revised)
 
     assert store.row_count() == 10
     assert store.load()["close"].iloc[0] == pytest.approx(2.0)
 
 
 def test_store_slice(tmp_path, bars: pd.DataFrame) -> None:
-    store = CandleStore(tmp_path / "c.parquet")
-    store.append(bars)
+    store = PartitionedStore(tmp_path, "NSE_INDEX|Nifty 50")
+    store.write(bars)
 
     start = bars.index[100]
     end = bars.index[200]

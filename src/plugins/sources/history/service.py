@@ -22,7 +22,7 @@ from core.calendar import IST
 from core.settings import Settings
 
 from .. import DataUnavailable
-from .store import CandleStore
+from .partitions import PartitionedStore
 
 
 class HistorySource:
@@ -37,7 +37,14 @@ class HistorySource:
         self.settings = settings
         self.broker = broker
         self.offline = offline
-        self.store = CandleStore(settings.candles_path, settings.bar_minutes)
+        self.store = PartitionedStore(
+            settings.data_dir,
+            settings.instrument_key,
+            bar_minutes=settings.bar_minutes,
+        )
+        # Anyone who ran the single-file store has history in it; importing it on
+        # first use is the difference between a migration and a disappearance.
+        self.store.migrate_legacy()
 
     # ------------------------------------------------------------- credentials
 
@@ -95,6 +102,11 @@ class HistorySource:
 
         return self._load_and_refresh(cached, days, quiet)
 
+    def _merge_fetched(self, fetched: pd.DataFrame) -> pd.DataFrame:
+        """Store what was fetched and return everything the store now holds."""
+        self.store.write(fetched)
+        return self.store.load()
+
     def seed(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Replace the cache with ``frame`` and return it.
 
@@ -144,7 +156,7 @@ class HistorySource:
             except RuntimeError:
                 pass
 
-        merged = self.store.append(fetched)
+        merged = self._merge_fetched(fetched)
         if not quiet:
             first, last = self.store.coverage()
             print(f"Store now holds {len(merged):,} bars ({first} -> {last})")

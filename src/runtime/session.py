@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -48,6 +49,11 @@ class SessionConfig:
     replay_bars: int = 40
     # Chart the call and put legs beside the index when a chain is available.
     legs: bool = True
+    # Write the live tape and chain samples to the store while the session runs.
+    # Only ever true for a live run: recording generated ticks into the real
+    # store would mix invented prices into the only dataset that cannot be
+    # re-fetched.
+    record: bool = True
 
 
 @dataclass
@@ -60,6 +66,8 @@ class Session:
 
     engine: Engine = field(init=False)
     board: MarketBoard | None = field(init=False, default=None)
+    tick_recorder: object | None = field(init=False, default=None)
+    chain_recorder: object | None = field(init=False, default=None)
     renderer: object | None = field(init=False, default=None)
     live: bool = field(init=False, default=False)
 
@@ -115,7 +123,65 @@ class Session:
 
         if self.renderer is not None:
             self.renderer.forecaster = self.engine.forecaster
+
+        self._start_recording()
         return self
+
+    def _start_recording(self) -> None:
+        """Begin writing the tape and the chain, if this is a live run."""
+        if not self.config.record or not self.live:
+            return
+
+        from plugins.sources.history import (
+            CHAIN,
+            HOUR,
+            TICKS,
+            ChainRecorder,
+            PartitionedStore,
+            TickRecorder,
+            normalize_frames,
+        )
+
+        settings = self.kernel.settings
+        self.tick_recorder = TickRecorder(
+            store=PartitionedStore(
+                settings.data_dir,
+                settings.instrument_key,
+                dataset=TICKS,
+                shard=HOUR,
+                normalizer=normalize_frames,
+            )
+        )
+        self.chain_recorder = ChainRecorder(
+            store=PartitionedStore(
+                settings.data_dir,
+                f"{settings.instrument_key}-chain",
+                dataset=CHAIN,
+                shard=HOUR,
+                normalizer=normalize_frames,
+            )
+        )
+        if self.board is not None:
+            self.board.on_refresh = self._sample_chain
+        self.logger.info("recording ticks and chain samples under %s", settings.data_dir)
+
+    def _sample_chain(self) -> None:
+        """Take a chain snapshot if enough time has passed since the last one."""
+        if self.chain_recorder is None or self.source_chain is None:
+            return
+        now = time.monotonic()
+        if not self.chain_recorder.due(now):
+            return
+        try:
+            chain = self.source_chain.chain(self.engine.last_price, bars=self.engine.market_bars())
+        except Exception as exc:  # noqa: BLE001 — a failed sample is not a failed session
+            self.logger.debug("chain sample failed: %s", exc)
+            return
+        self.chain_recorder.record(chain, now)
+
+    @property
+    def source_chain(self):
+        return getattr(self.board, "source", None)
 
     def describe(self) -> str:
         source = "upstox (live)" if self.live else "simulated"
@@ -160,9 +226,20 @@ class Session:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            self.stop_recording()
             close = getattr(self.broker, "close", None)
             if callable(close):
                 close()
+
+    def stop_recording(self) -> None:
+        """Flush whatever is buffered. Called on exit and safe to call twice."""
+        for recorder in (self.tick_recorder, self.chain_recorder):
+            flush = getattr(recorder, "close", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception as exc:  # noqa: BLE001 — never lose the session to a flush
+                    self.logger.warning("failed to flush the store: %s", exc)
 
     async def _drive(self, feed) -> None:
         """Run the feed, reporting a failure as status rather than as a crash."""
@@ -205,7 +282,9 @@ class Session:
         )
 
     def _on_tick(self, tick) -> None:
-        """One index tick in; the board derives the leg ticks from it."""
+        """One index tick in: record it, then let the board derive the legs."""
+        if self.tick_recorder is not None:
+            self.tick_recorder.record(tick)
         if self.board is not None:
             self.board.on_tick(tick)
         else:

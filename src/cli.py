@@ -28,6 +28,7 @@ from plugins.forecasts.ml_ensemble.trainer import (
     render_scalping_hurdle,
     save_training_metadata,
 )
+from plugins.sources.history import StoreManifest
 from plugins.strategies import StrategyCatalog, StrategyContext
 from runtime.bars import BarLoader
 from runtime.session import Session, SessionConfig
@@ -489,6 +490,150 @@ def plugins(
     )
 
 
+# ---------------------------------------------------------------------- data
+
+
+@app.command()
+def data(
+    verbose: bool = typer.Option(False, "--verbose", help="List every partition file"),
+) -> None:
+    """Show what is stored locally, without touching the network.
+
+    Answers "do I have to fetch this again?" from the manifest, so it is instant
+    on a store of any size.
+    """
+    settings = _settings()
+    manifest = StoreManifest(settings.data_dir / "manifest.json")
+    payload = manifest.read()
+    datasets = payload.get("datasets", {})
+
+    if not datasets:
+        console.print(
+            f"[yellow]nothing stored[/] under {settings.data_dir}\n"
+            "[dim]run `niftypulse fetch` for historical bars, or `niftypulse sync` "
+            "for everything a live account can give.[/]"
+        )
+        return
+
+    table = Table(title=f"Stored data — {settings.data_dir}", header_style="bold cyan")
+    for column in ("dataset", "instrument", "rows", "shards", "from", "to"):
+        table.add_column(column)
+
+    for name in sorted(datasets):
+        for key, entry in sorted(datasets[name].items()):
+            table.add_row(
+                name,
+                str(entry.get("instrument", key)),
+                f"{int(entry.get('rows', 0)):,}",
+                str(entry.get("sessions", entry.get("shards", ""))),
+                str(entry.get("first", ""))[:16],
+                str(entry.get("last", ""))[:16],
+            )
+    console.print(table)
+
+    if verbose:
+        for path in sorted(settings.data_dir.rglob("*.parquet")):
+            size_kb = path.stat().st_size / 1024
+            console.print(f"  [grey62]{path.relative_to(settings.data_dir)}[/]  {size_kb:,.0f} KB")
+
+    total = sum(path.stat().st_size for path in settings.data_dir.rglob("*.parquet"))
+    console.print(
+        f"\n[dim]{len(list(settings.data_dir.rglob('*.parquet')))} partition files, "
+        f"{total / 1_048_576:.1f} MB on disk. Manifest updated {payload.get('updated_at', 'never')}.[/]"
+    )
+
+
+@app.command()
+def sync(
+    days: int = typer.Option(400, help="Calendar days of 1-minute history to pull"),
+    offline: bool = typer.Option(False, "--offline", help="Generate instead of pulling"),
+) -> None:
+    """Pull everything the account can give, and store it. Never fetches twice.
+
+    The cache is checked first and only the missing tail is requested, so running
+    this on every start costs one API call when there is nothing new, and nothing
+    at all when the cache is current.
+    """
+    settings = _settings()
+    kernel = Kernel.bootstrap(settings)
+    broker = kernel.build("source:upstox")
+    loader = BarLoader(kernel)
+
+    if not offline and not broker.is_configured:
+        console.print(
+            "[yellow]no Upstox credentials[/] — pulling nothing. "
+            "Run `niftypulse login` to fetch real data, or pass --offline to generate."
+        )
+
+    frames = loader.load(days=days, refresh=True, offline=offline)
+    if frames.empty:
+        console.print("[red]no candles retrieved[/]")
+        raise typer.Exit(code=1)
+
+    store = loader.kernel.capability("history").store
+    first, last = store.coverage()
+    console.print(
+        Panel(
+            f"bars       [bold]{len(frames):,}[/]\n"
+            f"sessions   [bold]{store.sessions():,}[/]\n"
+            f"range      {first:%Y-%m-%d %H:%M} -> {last:%Y-%m-%d %H:%M}\n"
+            f"partitions {store.base.relative_to(settings.data_dir)}/YYYY/MM/DD.parquet",
+            title="[green]candles stored[/]",
+            border_style="green",
+        )
+    )
+
+    if broker.is_configured and not offline:
+        source = kernel.capability("option_chain")
+        chain = source.chain(frames["close"].iloc[-1], bars=frames)
+        totals = chain.totals()
+        console.print(
+            Panel(
+                f"expiry     [bold]{chain.expiry:%a %d %b %Y}[/]\n"
+                f"strikes    {len(chain.strikes())} around {chain.atm_strike:,.0f}\n"
+                f"PCR        {totals['pcr']:.2f}  "
+                f"(CE OI {totals['call_oi']:,.0f} / PE OI {totals['put_oi']:,.0f})\n"
+                f"snapshot   written to data/chain/...",
+                title="[green]option chain read[/]",
+                border_style="green",
+            )
+        )
+        _store_chain_snapshot(kernel, chain)
+
+    console.print(
+        "\n[dim]Ticks and chain history cannot be back-filled: the API publishes "
+        "candles, not the tape that produced them. Both are recorded while a live "
+        "session runs, so whatever is missing is missing for good — start a "
+        "session with `niftypulse dashboard` to begin collecting.[/]"
+    )
+
+
+def _store_chain_snapshot(kernel, chain) -> None:
+    """Write one chain snapshot, so the store has a starting point."""
+    import time as _time
+
+    from plugins.sources.history import (
+        CHAIN,
+        HOUR,
+        ChainRecorder,
+        PartitionedStore,
+        normalize_frames,
+    )
+
+    settings = kernel.settings
+    recorder = ChainRecorder(
+        store=PartitionedStore(
+            settings.data_dir,
+            f"{settings.instrument_key}-chain",
+            dataset=CHAIN,
+            shard=HOUR,
+            normalizer=normalize_frames,
+        )
+    )
+    recorder.record(chain, _time.monotonic())
+    recorder.close()
+
+
 # -------------------------------------------------------------------- doctor
 
 
@@ -517,12 +662,49 @@ def doctor() -> None:
         ("upstox token", "present" if token else "missing", "ok" if token else "warn")
     )
 
-    store_bars = 0
     if settings.candles_path.exists():
         import pandas as pd
 
-        store_bars = len(pd.read_parquet(settings.candles_path, columns=["close"]))
-    rows.append(("cached bars", f"{store_bars:,}", "ok" if store_bars else "warn"))
+        legacy = len(pd.read_parquet(settings.candles_path, columns=["close"]))
+        rows.append(
+            ("legacy candle file", f"{legacy:,} bars — run `niftypulse sync` to import", "warn")
+        )
+
+    manifest = StoreManifest(settings.data_dir / "manifest.json")
+    stored = manifest.read().get("datasets", {})
+    candles = stored.get("candles", {})
+    entry = next(iter(candles.values()), {})
+    if entry:
+        rows.append(
+            (
+                "partitioned store",
+                f"{int(entry.get('rows', 0)):,} bars, {entry.get('sessions', 0)} shards",
+                "ok",
+            )
+        )
+    if stored.get("ticks"):
+        tick_entry = next(iter(stored["ticks"].values()), {})
+        rows.append(("recorded ticks", f"{int(tick_entry.get('rows', 0)):,}", "ok"))
+    if stored.get("chain"):
+        chain_entry = next(iter(stored["chain"].values()), {})
+        rows.append(("chain samples", f"{int(chain_entry.get('rows', 0)):,}", "ok"))
+
+    manifest = StoreManifest(settings.data_dir / "manifest.json")
+    stored = manifest.read().get("datasets", {})
+    candles = stored.get("candles", {})
+    entry = next(iter(candles.values()), {})
+    rows.append(
+        (
+            "stored bars",
+            f"{int(entry.get('rows', 0)):,} in {entry.get('sessions', 0)} shards"
+            if entry
+            else "none",
+            "ok" if entry else "warn",
+        )
+    )
+    if stored.get("ticks"):
+        tick_entry = next(iter(stored["ticks"].values()), {})
+        rows.append(("recorded ticks", f"{int(tick_entry.get('rows', 0)):,}", "ok"))
 
     artifacts = list_artifacts(settings)
     rows.append(

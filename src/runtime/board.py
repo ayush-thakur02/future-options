@@ -21,6 +21,7 @@ against the bars of another would be a quiet lie.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -90,6 +91,9 @@ class MarketBoard:
         self.index_bars: pd.DataFrame = pd.DataFrame()
         self.expiry = None
         self.ticks = 0
+        # Called at the end of every refresh, so a session can sample the chain on
+        # the same clock the projections run on rather than inventing a second one.
+        self.on_refresh: Callable[[], None] | None = None
 
     # ---------------------------------------------------------------- assembly
 
@@ -254,6 +258,8 @@ class MarketBoard:
         produced = self.index_engine.refresh_projection()
         for leg in self.legs[1:]:
             leg.engine.refresh_projection()
+        if self.on_refresh is not None:
+            self.on_refresh()
         return produced
 
     def publish(self) -> None:
