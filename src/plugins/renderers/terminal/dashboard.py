@@ -20,9 +20,10 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 
-from core.types import MarketSnapshot
+from core.types import BoardSnapshot, MarketSnapshot
 from plugins.forecasts.projection import ProjectionForecaster
 
+from . import board as board_panels
 from . import panels
 
 # The chart flexes; the forecast and projection panels are sized to their
@@ -90,6 +91,70 @@ class TerminalRenderer:
         layout["footer"].update(panels.footer(snapshot, status))
         return layout
 
+    def build_board(self, board: BoardSnapshot, status: str = "") -> Layout:
+        """The call/index/put layout: three charts, one verdict panel under them.
+
+        The charts take the space; the verdict and the strategies share the row
+        beneath. On a narrow terminal the three charts still fit because each is
+        only as wide as its own panel — a leg chart of 30 columns is small, but it
+        is the same chart, drawn smaller.
+        """
+        width = max(self.console.width - 2, 50)
+        height = max(self.console.height - 4, 20)
+        chart_height = int(min(max(height * 0.34, MIN_CHART_HEIGHT), MAX_CHART_HEIGHT))
+        verdict_height = 9
+        bottom = height - chart_height - verdict_height - 4
+        if bottom < 8:
+            chart_height = max(chart_height - (8 - bottom), 4)
+            bottom = 8
+
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="charts", size=chart_height + 3),
+            Layout(name="verdict", size=verdict_height),
+            Layout(name="bottom", size=bottom),
+            Layout(name="footer", size=1),
+        )
+        layout["charts"].split_row(
+            *[Layout(name=leg.label.lower(), ratio=1) for leg in board.legs]
+        )
+        layout["bottom"].split_row(
+            Layout(name="strategies", ratio=2),
+            Layout(name="indicators", ratio=3),
+        )
+
+        layout["header"].update(board_panels.board_header(board, status, self.timeframe))
+
+        # Split the row the way Rich will, rather than approximating it: give the
+        # last panel the remainder. A panel told it is wider than it is right-aligns
+        # its chart into the gap, and one told it is narrower wraps its price axis.
+        count = max(len(board.legs), 1)
+        base = max(width // count, 20)
+        for index, leg in enumerate(board.legs):
+            panel_width = base if index < count - 1 else max(width - base * (count - 1), base)
+            layout[leg.label.lower()].update(
+                board_panels.leg_panel(leg, panel_width, chart_height, self.timeframe)
+            )
+        layout["verdict"].update(board_panels.verdicts(board))
+        spot_leg = board.spot_leg
+        layout["strategies"].update(
+            panels.signals(spot_leg.snapshot) if spot_leg else panels.signals(MarketSnapshot(
+                ts=board.ts, symbol=board.symbol, last_price=board.spot, prev_close=board.spot, candles=None
+            ))
+        )
+        layout["indicators"].update(
+            panels.indicators(spot_leg.snapshot) if spot_leg else panels.indicators(
+                MarketSnapshot(ts=board.ts, symbol=board.symbol, last_price=board.spot,
+                               prev_close=board.spot, candles=None)
+            )
+        )
+        layout["footer"].update(board_panels.board_footer(board, status))
+        return layout
+
+    def show_board(self, board: BoardSnapshot, status: str = "") -> None:
+        self.console.print(self.build_board(board, status))
+
     def show(self, snapshot: MarketSnapshot, status: str = "") -> None:
         """Print a single frame, without taking over the screen."""
         self.console.print(self.build(snapshot, status))
@@ -115,9 +180,17 @@ class TerminalRenderer:
             finally:
                 self._live = None
 
-    def live_update(self, snapshot: MarketSnapshot, status: str = "") -> None:
-        """Push one frame to the live display. A no-op when not in a live block."""
-        if self._live is not None:
+    def live_update(self, snapshot: MarketSnapshot | BoardSnapshot, status: str = "") -> None:
+        """Push one frame to the live display. A no-op when not in a live block.
+
+        Takes either shape: a board when the option chain is available, a single
+        market when it is not, so the session does not have to care which.
+        """
+        if self._live is None:
+            return
+        if isinstance(snapshot, BoardSnapshot):
+            self._live.update(self.build_board(snapshot, status))
+        else:
             self._live.update(self.build(snapshot, status))
 
     def _blank(self):

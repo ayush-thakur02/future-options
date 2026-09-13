@@ -17,6 +17,7 @@ from rich.table import Table
 from backtest import BacktestConfig, CostModel, run_backtest, run_threshold_sweep
 from core.calendar import TradingCalendar
 from core.settings import Settings, load_settings
+from core.types import BoardSnapshot
 from core.version import __version__
 from kernel import BUILTIN_PACKAGE, Kernel
 from plugins.features.technical import FEATURE_GROUPS, build_features, feature_columns
@@ -314,8 +315,11 @@ def dashboard(
     refresh: float = typer.Option(1.0, help="Seconds between frames"),
     nowcast: float = typer.Option(1.0, help="Seconds between projection refreshes"),
     bars_ahead: int = typer.Option(3, help="How many candles to project"),
+    legs: bool = typer.Option(
+        True, "--legs/--no-legs", help="Chart the at-the-money call and put beside the index"
+    ),
 ) -> None:
-    """Run the live dashboard: candles, and the next three projected every second."""
+    """Run the dashboard: call, index and put, with the next three candles projected."""
     settings = _settings()
     settings.bar_minutes = timeframe
     if bars_ahead:
@@ -329,6 +333,7 @@ def dashboard(
             refresh=refresh,
             nowcast_interval=nowcast,
             speed=speed,
+            legs=legs,
         ),
     )
 
@@ -339,10 +344,9 @@ def dashboard(
             "[cyan]simulated feed[/] — generated ticks, paced against the clock. "
             "Set Upstox credentials for live data.\n"
         )
-    console.print(f"[dim]{session.describe()}[/]")
-
     try:
         session.bootstrap()
+        console.print(f"[dim]{session.describe()}[/]")
         asyncio.run(session.run())
     except KeyboardInterrupt:
         pass
@@ -356,11 +360,12 @@ def snapshot(
     bars_ahead: int = typer.Option(3, help="How many candles to project"),
     offline: bool = typer.Option(True, "--offline/--live", help="Use simulated bars"),
     timeframe: int = typer.Option(1, help="Bar size in minutes"),
+    legs: bool = typer.Option(True, "--legs/--no-legs", help="Show the call/index/put board"),
 ) -> None:
     """Render one frame to stdout, with the projected candles, and exit.
 
     Useful when there is no interactive terminal — in a pipe, in CI, or when
-    checking what the projection looks like without waiting for a clock.
+    checking what a board looks like without waiting for a clock.
     """
     settings = _settings()
     settings.bar_minutes = timeframe
@@ -369,14 +374,19 @@ def snapshot(
 
     session = Session(
         kernel=Kernel.bootstrap(settings),
-        config=SessionConfig(offline=offline, timeframe=timeframe, days=3),
+        config=SessionConfig(offline=offline, timeframe=timeframe, days=3, legs=legs),
     )
     session.bootstrap()
-    session.engine.refresh_projection()
 
-    frame = session.engine.snapshot()
-    frame.candles = frame.candles.tail(rows)
-    session.renderer.show(frame, session.engine.status)
+    frame = session.snapshot()
+    if isinstance(frame, BoardSnapshot):
+        for leg in frame.legs:
+            leg.snapshot.candles = leg.snapshot.candles.tail(rows)
+        session.renderer.show_board(frame, session.engine.status)
+    else:
+        frame.candles = frame.candles.tail(rows)
+        session.renderer.show(frame, session.engine.status)
+
     console.print(f"[dim]{session.describe()}[/]")
     stats = session.engine.forecaster
     if stats is not None:

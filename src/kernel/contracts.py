@@ -31,6 +31,10 @@ class PluginKind(StrEnum):
 
     Kinds exist so the CLI can group plugins and so a handle reads as
     ``source:upstox`` rather than a bare name that collides across roles.
+
+    ``FORECAST`` and ``ADVISORY`` are deliberately distinct: a forecast is a
+    statement about the market, while advice is a statement about a *position*,
+    which also has to account for what holding it costs.
     """
 
     SOURCE = "source"
@@ -38,6 +42,7 @@ class PluginKind(StrEnum):
     FEATURES = "features"
     STRATEGY = "strategy"
     FORECAST = "forecast"
+    ADVISORY = "advisory"
     RENDERER = "renderer"
     TOOL = "tool"
 

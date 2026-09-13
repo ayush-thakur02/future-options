@@ -42,7 +42,12 @@ class NowcastStats:
 
 
 class NowcastLoop:
-    """Refreshes the engine's projected path on a fixed interval."""
+    """Refreshes projected paths on a fixed interval.
+
+    Takes anything with ``refresh_projection()`` and ``publish()``: a single
+    engine, or a board that refreshes every leg on it. The clock has no business
+    knowing how many instruments it is driving.
+    """
 
     def __init__(
         self,

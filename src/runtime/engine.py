@@ -59,9 +59,12 @@ class Engine:
         calendar: TradingCalendar | None = None,
         feature_window: int = FEATURE_WINDOW,
         signal_window: int = SIGNAL_WINDOW,
+        symbol: str | None = None,
+        forecaster=None,
     ) -> None:
         self.kernel = kernel
         self.settings = kernel.settings
+        self.symbol = symbol or kernel.settings.symbol
         self.bar_minutes = bar_minutes or kernel.settings.bar_minutes
         self.calendar = calendar or TradingCalendar()
         self.feature_window = feature_window
@@ -77,8 +80,13 @@ class Engine:
         self.aggregator = kernel.build(
             "aggregator:candle_builder", bar_minutes=self.bar_minutes
         )
-        self.forecaster = (
-            kernel.capability("projection") if kernel.registry.capabilities().get("projection") else None
+        # Its own projection, not the kernel's shared one: several engines can
+        # run side by side — one per instrument on the options board — and each
+        # needs its own momentum, its own path and its own scorecard.
+        self.forecaster = forecaster or (
+            kernel.new("forecast:projection")
+            if kernel.registry.capabilities().get("projection")
+            else None
         )
         self.history: pd.DataFrame = pd.DataFrame()
         self.features: pd.DataFrame = pd.DataFrame()
@@ -310,7 +318,7 @@ class Engine:
 
         return MarketSnapshot(
             ts=datetime.now(IST),
-            symbol=self.settings.symbol,
+            symbol=self.symbol,
             last_price=self.last_price,
             prev_close=self.prev_close,
             candles=bars,

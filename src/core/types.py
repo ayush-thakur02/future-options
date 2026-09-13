@@ -186,6 +186,92 @@ class ForecastCandle:
         }
 
 
+@dataclass(slots=True)
+class LegVerdict:
+    """What one leg of the board is worth doing, and the arithmetic behind it.
+
+    Every number here is derived from the same three questions the rest of the
+    platform asks: what does the move have to be, what is it projected to be, and
+    what does the position pay while waiting. A verdict without its arithmetic
+    would be an opinion; with it, a reader can disagree with the inputs.
+    """
+
+    label: str
+    action: str
+    required_move_bps: float
+    projected_move_bps: float
+    theta_cost_bps: float = 0.0
+    cost_bps: float = 0.0
+    iv: float = 0.0
+    realised_vol: float = 0.0
+    reason: str = ""
+
+    @property
+    def edge_bps(self) -> float:
+        return abs(self.projected_move_bps) - self.required_move_bps
+
+    @property
+    def is_trade(self) -> bool:
+        return self.action != "FLAT"
+
+    def as_row(self) -> dict:
+        return {
+            "label": self.label,
+            "action": self.action,
+            "required_bps": round(self.required_move_bps, 1),
+            "projected_bps": round(self.projected_move_bps, 1),
+            "edge_bps": round(self.edge_bps, 1),
+            "theta_bps": round(self.theta_cost_bps, 1),
+            "iv": round(self.iv, 4),
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
+class LegSnapshot:
+    """One instrument on the board: the index, a call, or a put."""
+
+    label: str
+    kind: str
+    snapshot: MarketSnapshot
+    strike: float = 0.0
+    greeks: dict = field(default_factory=dict)
+    verdict: LegVerdict | None = None
+
+    @property
+    def is_option(self) -> bool:
+        return self.kind in {"CE", "PE"}
+
+
+@dataclass(slots=True)
+class BoardSnapshot:
+    """Everything the renderer needs for a call/index/put frame."""
+
+    ts: datetime
+    symbol: str
+    spot: float
+    legs: list[LegSnapshot] = field(default_factory=list)
+    chain: dict = field(default_factory=dict)
+    headline: str = ""
+    note: str = ""
+
+    def leg(self, label: str) -> LegSnapshot | None:
+        for item in self.legs:
+            if item.label == label:
+                return item
+        return None
+
+    @property
+    def spot_leg(self) -> LegSnapshot | None:
+        return self.leg("INDEX")
+
+    def option_legs(self) -> list[LegSnapshot]:
+        return [item for item in self.legs if item.is_option]
+
+    def tradeable(self) -> list[LegVerdict]:
+        return [item.verdict for item in self.legs if item.verdict and item.verdict.is_trade]
+
+
 @dataclass
 class MarketSnapshot:
     """Everything the UI needs to render one frame."""

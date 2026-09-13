@@ -135,6 +135,27 @@ def render_chart(
     )
 
 
+def chart_budget(width: int, axis_preferred: int = 10, separator: str = " │ ") -> tuple[int, int]:
+    """Split a panel's interior between the candles and the price axis.
+
+    Never returns a total wider than the interior. An axis that does not fit
+    wraps and prints over the candles on the following line, which is the failure
+    this arithmetic exists to prevent — and three panels across one row is
+    exactly where it happens.
+
+    The candle field wins a tie. A nine-column chart with labels beside it is
+    harder to read than a nineteen-column chart without them, and the panel title
+    carries the last price anyway, so the axis is what gives way.
+
+    Returns ``(chart_width, axis_width)``, where an ``axis_width`` of zero means
+    the caller should draw the candles alone.
+    """
+    interior = max(width - 4, 8)
+    if interior - len(separator) - axis_preferred >= 12:
+        return interior - len(separator) - axis_preferred, axis_preferred
+    return max(interior - len(separator), 6), 0
+
+
 def render_candles(
     bars: pd.DataFrame,
     projections: list[ForecastCandle] | None = None,
@@ -232,4 +253,4 @@ def _draw_candle(
         grid.put(body_top, column, HALF_BODY if body == BODY else body, style)
 
 
-__all__ = ["Chart", "render_candles", "render_chart"]
+__all__ = ["Chart", "chart_budget", "render_candles", "render_chart"]

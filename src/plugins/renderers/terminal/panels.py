@@ -22,7 +22,7 @@ from core.calendar import IST
 from core.types import MarketSnapshot
 from plugins.forecasts.projection import ProjectionForecaster
 
-from .candles import render_chart
+from .candles import chart_budget, render_chart
 from .theme import arrow, change_style, forecast_style
 from .widgets import (
     confidence_meter,
@@ -84,9 +84,7 @@ def chart(snapshot: MarketSnapshot, width: int, height: int, timeframe: str) -> 
     # axis lands on the following line, printed over the candles. One column is
     # held back as margin.
     separator = " │ "
-    axis_width = 12
-    interior = width - 4
-    chart_width = max(interior - len(separator) - axis_width - 1, 20)
+    chart_width, axis_width = chart_budget(width, axis_preferred=10)
 
     rendered = render_chart(
         bars if bars is not None else bars.iloc[0:0],
@@ -104,8 +102,9 @@ def chart(snapshot: MarketSnapshot, width: int, height: int, timeframe: str) -> 
         # appended literally — appending raw would print the tags and inflate the
         # line width until the price axis is pushed off-screen.
         row = Text.from_markup(line)
-        row.append(separator, style=PANEL_BORDER)
-        row.append(axis, style=TITLE_STYLE)
+        if axis_width:
+            row.append(separator, style=PANEL_BORDER)
+            row.append(axis, style=TITLE_STYLE)
         rows.append(row)
 
     # No legend row inside the panel: every row here carries an axis label on the

@@ -28,6 +28,7 @@ from .chain import (
     STRIKE_STEP,
     LegQuote,
     OptionChain,
+    annualised_vol,
     chain_iv,
     leg_bars,
     next_weekly_expiry,
@@ -98,6 +99,7 @@ class OptionChainSource:
         self.width = int(width)
         self.expiry_weekday = int(expiry_weekday)
         self._expiry: datetime | None = None
+        self._realised_vol = 0.12
 
     # ------------------------------------------------------------------ expiry
 
@@ -112,6 +114,16 @@ class OptionChainSource:
         moment = (moment or datetime.now(IST)).astimezone(IST)
         return trading_minutes_to(moment, self.expiry(moment))
 
+    @property
+    def strike_step(self) -> float:
+        """Distance between strikes, which is what "at the money" is measured against."""
+        return float(STRIKE_STEP)
+
+    @property
+    def realised_vol(self) -> float:
+        """The last realised vol the chain was priced against, for IV comparison."""
+        return float(self._realised_vol)
+
     def atm_strike(self, spot: float) -> float:
         return float(round(spot / STRIKE_STEP) * STRIKE_STEP)
 
@@ -119,7 +131,10 @@ class OptionChainSource:
 
     def iv(self, bars: pd.DataFrame) -> float:
         """The vol a synthetic chain carries, from the bars it is built on."""
-        return chain_iv(bars["close"]) if bars is not None and not bars.empty else 0.12
+        if bars is None or bars.empty:
+            return self._realised_vol
+        self._realised_vol = annualised_vol(bars["close"])
+        return chain_iv(bars["close"])
 
     def chain(
         self,

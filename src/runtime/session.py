@@ -23,6 +23,7 @@ from core.types import MarketSnapshot
 from kernel import Kernel
 
 from .bars import BarLoader
+from .board import MarketBoard
 from .engine import Engine
 from .nowcast import NowcastLoop
 
@@ -45,6 +46,8 @@ class SessionConfig:
     refresh_history: bool = True
     # Bars replayed by Session.replay when no series is supplied.
     replay_bars: int = 40
+    # Chart the call and put legs beside the index when a chain is available.
+    legs: bool = True
 
 
 @dataclass
@@ -56,6 +59,7 @@ class Session:
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("niftypulse.session"))
 
     engine: Engine = field(init=False)
+    board: MarketBoard | None = field(init=False, default=None)
     renderer: object | None = field(init=False, default=None)
     live: bool = field(init=False, default=False)
 
@@ -87,19 +91,35 @@ class Session:
         )
 
     def bootstrap(self) -> Session:
-        """Load history and warm the engine up, so the first frame is readable."""
+        """Load history and warm everything up, so the first frame is readable."""
         bars = self.loader.load(
             days=self.config.days,
             refresh=self.config.refresh_history and self.live,
             quiet=False,
             offline=self.config.offline,
         )
-        self.engine.bootstrap(history=bars)
-        self.engine.refresh_projection()
+
+        if self.config.legs and self.kernel.registry.capabilities().get("option_chain"):
+            self.board = MarketBoard(
+                self.kernel,
+                bar_minutes=self.kernel.settings.bar_minutes,
+                logger=self.logger,
+            ).build(bars)
+            # The index engine of the board *is* this session's engine, so every
+            # other part of the runtime — the feed, the clock, the renderer —
+            # keeps talking to one thing.
+            self.engine = self.board.index_engine
+        else:
+            self.engine.bootstrap(history=bars)
+            self.engine.refresh_projection()
+
+        if self.renderer is not None:
+            self.renderer.forecaster = self.engine.forecaster
         return self
 
     def describe(self) -> str:
         source = "upstox (live)" if self.live else "simulated"
+        legs = f" · {self.board.describe()}" if self.board is not None else ""
         strategies = self.engine.catalog.summary()
         predictor = self.engine.predictor
         models = (
@@ -107,13 +127,14 @@ class Session:
         )
         return (
             f"source {source} · {self.config.timeframe or self.kernel.settings.bar_minutes}m bars · "
-            f"{strategies} · models {models}"
+            f"{strategies} · models {models}{legs}"
         )
 
     # ------------------------------------------------------------------ drives
 
-    def snapshot(self) -> MarketSnapshot:
-        return self.engine.snapshot()
+    def snapshot(self):
+        """The frame to draw: a whole board when the legs are on, else one market."""
+        return self.board.snapshot() if self.board is not None else self.engine.snapshot()
 
     async def run(self) -> None:
         """Stream data, refresh the projection, and render, until interrupted."""
@@ -123,7 +144,10 @@ class Session:
             raise RuntimeError("no bars loaded; check the source and the cache")
 
         feed = self._build_feed()
-        nowcast = NowcastLoop(self.engine, interval=self.config.nowcast_interval, logger=self.logger)
+        # The clock is driven by whatever owns the projections: a board refreshes
+        # every leg, an engine refreshes itself. Both expose the same two methods.
+        clock_target = self.board if self.board is not None else self.engine
+        nowcast = NowcastLoop(clock_target, interval=self.config.nowcast_interval, logger=self.logger)
 
         tasks = [asyncio.create_task(nowcast.run(), name="nowcast")]
         if feed is not None:
@@ -155,7 +179,7 @@ class Session:
         if self.live:
             self.engine.status = "connecting"
             return self.broker.feed(
-                on_tick=self.engine.on_tick,
+                on_tick=self._on_tick,
                 on_status=self._on_status,
             )
 
@@ -172,13 +196,20 @@ class Session:
         self.engine.status = "replaying"
         return market.feed(
             bars=bars,
-            on_tick=self.engine.on_tick,
+            on_tick=self._on_tick,
             on_status=self._on_status,
             speed=self.config.speed,
             ticks_per_bar=self.config.ticks_per_bar,
             bar_minutes=self.kernel.settings.bar_minutes,
             close_prev=self.engine.prev_close,
         )
+
+    def _on_tick(self, tick) -> None:
+        """One index tick in; the board derives the leg ticks from it."""
+        if self.board is not None:
+            self.board.on_tick(tick)
+        else:
+            self.engine.on_tick(tick)
 
     def _on_status(self, payload: dict) -> None:
         kind = payload.get("type")

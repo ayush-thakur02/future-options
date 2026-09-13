@@ -91,6 +91,18 @@ class Kernel:
             self._instances[handle] = self._invoke(entry, self.params_for(handle))
         return self._instances[handle]
 
+    def new(self, handle: str, **params: Any) -> Any:
+        """Build a fresh instance, ignoring the cache.
+
+        ``build`` memoises because a feed or a model must not be constructed
+        twice. This is the opposite request, and it is needed the moment there is
+        more than one of something: three instruments on one board need three
+        aggregators and three projections, each with its own state, sharing one
+        kernel. Configured params are still applied underneath the explicit ones.
+        """
+        entry = self.registry.get(handle)
+        return self._invoke(entry, {**self.params_for(handle), **params})
+
     def capability(self, name: str) -> Any:
         """Build whichever plugin provides ``name``."""
         return self.build(self.registry.provider(name))
