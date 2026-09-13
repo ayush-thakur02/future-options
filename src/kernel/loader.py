@@ -70,7 +70,7 @@ def discover(package: str = BUILTIN_PACKAGE, report: LoadReport | None = None) -
         report.fail(package, exc)
         return report
 
-    for module_name in _plugin_modules(root, package):
+    for module_name in _plugin_modules(root, package, report):
         try:
             report.add(load_module(module_name))
         except Exception as exc:  # noqa: BLE001 — a bad plugin is data, not a crash
@@ -130,16 +130,32 @@ def read_builder(module: ModuleType) -> Builder:
     return builder
 
 
-def _plugin_modules(root: ModuleType, package: str) -> Iterator[str]:
+def _plugin_modules(root: ModuleType, package: str, report: LoadReport) -> Iterator[str]:
     """Every importable module named ``plugin`` under ``package``.
 
     ``walk_packages`` needs each plugin folder to be a real package, which is why
     every level of the tree carries an ``__init__.py``. That is a small price for
     arbitrary nesting, and it keeps a plugin folder importable on its own.
+
+    ``onerror`` is not optional. Without it ``walk_packages`` swallows an
+    ImportError from a subpackage and simply does not descend into it, so a pack
+    with a broken import disappears from the build with nothing reported — the
+    exact opposite of what this module promises. Re-importing inside the callback
+    is what turns "something failed" into the actual traceback, which is the part
+    a reader needs.
     """
     paths = list(getattr(root, "__path__", []))
+
+    def note(name: str) -> None:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001 — this is the report path
+            report.fail(name, exc)
+        else:  # pragma: no cover - the import succeeded on retry, so say so plainly
+            report.fail(name, PluginLoadError(f"{name} could not be scanned for plugins"))
+
     discovered: list[str] = []
-    for module in pkgutil.walk_packages(paths, prefix=f"{package}."):
+    for module in pkgutil.walk_packages(paths, prefix=f"{package}.", onerror=note):
         if module.name.rsplit(".", 1)[-1] == PLUGIN_MODULE:
             discovered.append(module.name)
     yield from sorted(discovered)
