@@ -14,7 +14,7 @@ from .pipeline import FeaturePipeline
 MANIFEST = PluginManifest(
     name="technical",
     kind=PluginKind.FEATURES,
-    description="40+ causal indicators plus session, calendar and regime context",
+    description="80+ causal indicators plus session, calendar, risk and regime context",
     provides=("features",),
     tags=("indicators", "technical", "context"),
 )

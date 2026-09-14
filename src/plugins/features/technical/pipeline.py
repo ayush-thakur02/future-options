@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from . import advanced as qa
 from . import indicators as ta
 from .session import classify_regime, overnight_features, session_features
 
@@ -64,6 +65,7 @@ def build_features(
     _add_activity(columns, close, data)
     _add_candle_shape(columns, data)
     _add_regime(columns, close)
+    _add_quantitative(columns, close, data)
 
     if include_context:
         context = pd.concat(
@@ -329,6 +331,75 @@ def _add_regime(out: _Columns, close: pd.Series) -> None:
     _register("regime", columns)
 
 
+def _add_quantitative(out: _Columns, close: pd.Series, data: pd.DataFrame) -> None:
+    """Adaptive trend, market-state, tail-risk and activity measurements."""
+    columns: list[str] = []
+    safe_close = close.replace(0, np.nan)
+    returns = ta.log_returns(close)
+
+    out["kama_dist_10"] = close / qa.kama(close, 10).replace(0, np.nan) - 1.0
+    out["dema_dist_20"] = close / qa.dema(close, 20).replace(0, np.nan) - 1.0
+    out["tema_dist_20"] = close / qa.tema(close, 20).replace(0, np.nan) - 1.0
+    out["trix_15"] = qa.trix(close, 15)
+    ppo, ppo_signal, ppo_hist = qa.percentage_price_oscillator(close)
+    out["ppo_line"] = ppo
+    out["ppo_signal"] = ppo_signal
+    out["ppo_hist"] = ppo_hist
+    columns += [
+        "kama_dist_10",
+        "dema_dist_20",
+        "tema_dist_20",
+        "trix_15",
+        "ppo_line",
+        "ppo_signal",
+        "ppo_hist",
+    ]
+
+    fisher, fisher_signal = qa.fisher_transform(data, 10)
+    vigor, vigor_signal = qa.relative_vigor(data, 10)
+    out["fisher_10"] = fisher
+    out["fisher_signal"] = fisher_signal
+    out["rvi_10"] = vigor
+    out["rvi_signal"] = vigor_signal
+    out["elder_bull_13"] = (data["high"] - ta.ema(close, 13)) / safe_close
+    out["elder_bear_13"] = (data["low"] - ta.ema(close, 13)) / safe_close
+    columns += [
+        "fisher_10",
+        "fisher_signal",
+        "rvi_10",
+        "rvi_signal",
+        "elder_bull_13",
+        "elder_bear_13",
+    ]
+
+    out["choppiness_14"] = qa.choppiness(data, 14)
+    out["ulcer_14"] = qa.ulcer_index(close, 14)
+    out["downside_dev_30"] = qa.downside_deviation(returns, 30)
+    out["sortino_30"] = qa.rolling_sortino(returns, 30)
+    out["autocorr_1_50"] = qa.rolling_autocorrelation(returns, 50, 1)
+    out["variance_ratio_5_60"] = qa.variance_ratio(close, 60, 5)
+    out["direction_entropy_50"] = qa.directional_entropy(returns, 50)
+    out["mass_index_25"] = qa.mass_index(data, 9, 25)
+    columns += [
+        "choppiness_14",
+        "ulcer_14",
+        "downside_dev_30",
+        "sortino_30",
+        "autocorr_1_50",
+        "variance_ratio_5_60",
+        "direction_entropy_50",
+        "mass_index_25",
+    ]
+
+    ad_line = qa.accumulation_distribution(data)
+    out["ad_slope_20"] = ta.linreg_slope(ad_line.replace(0, np.nan).ffill(), 20)
+    out["ease_of_movement_14"] = qa.ease_of_movement(data, 14)
+    out["amihud_20"] = qa.amihud_illiquidity(data, 20)
+    columns += ["ad_slope_20", "ease_of_movement_14", "amihud_20"]
+
+    _register("quantitative", columns)
+
+
 def feature_columns(matrix: pd.DataFrame) -> list[str]:
     """Model input columns: numeric and non-constant."""
     excluded = {"bar_minutes", "_atr_norm_ref"}
@@ -382,4 +453,3 @@ class FeaturePipeline:
 
     def __repr__(self) -> str:
         return f"<FeaturePipeline expiry_weekday={self.expiry_weekday}>"
-
