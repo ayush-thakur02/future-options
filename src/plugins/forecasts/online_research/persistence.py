@@ -130,7 +130,7 @@ class StateRepository:
             record.algorithm,
             record.instrument,
             record.target_at.isoformat(),
-            int(record.is_scored),
+            int(record.is_resolved),
             json.dumps(
                 record.as_dict(), separators=(",", ":"), sort_keys=True, allow_nan=False
             ),

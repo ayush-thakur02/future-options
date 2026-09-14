@@ -155,13 +155,17 @@ class OnlineResearchLab:
                 (
                     record
                     for record in self._records
-                    if not record.is_scored
+                    if not record.is_resolved
                     and record.instrument == selected_instrument
                     and record.target_at <= observed_at
                 ),
                 key=lambda record: (record.target_at, record.issued_at, record.algorithm),
             )
+            scored: list[PredictionRecord] = []
             for record in due:
+                if record.target_at < observed_at:
+                    record.status = "expired"
+                    continue
                 realised = (actual / record.anchor_price - 1.0) * 10_000.0
                 target = int(realised > 0.0)
                 position = {
@@ -171,6 +175,7 @@ class OnlineResearchLab:
                 }[record.action]
                 gross_pnl = position * realised
                 record.matured_at = observed_at
+                record.status = "scored"
                 record.actual_price = actual
                 record.actual_return_bps = realised
                 record.label_up = target
@@ -183,9 +188,10 @@ class OnlineResearchLab:
                 algorithm = self.algorithms.get(record.algorithm)
                 if algorithm is not None:
                     algorithm.update(record.features, target)
+                scored.append(record)
             if due:
                 self._persist(due)
-            return [_copy_record(record) for record in due]
+            return [_copy_record(record) for record in scored]
 
     def scorecards(self) -> list[AlgorithmScorecard]:
         """Rolling and all-time metrics for every installed learner."""
@@ -232,7 +238,12 @@ class OnlineResearchLab:
     @property
     def pending_count(self) -> int:
         with self._lock:
-            return sum(not record.is_scored for record in self._records)
+            return sum(not record.is_resolved for record in self._records)
+
+    @property
+    def expired_count(self) -> int:
+        with self._lock:
+            return sum(record.status == "expired" for record in self._records)
 
     def describe(self) -> str:
         cards = self.scorecards()

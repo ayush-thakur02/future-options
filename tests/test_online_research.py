@@ -147,6 +147,25 @@ def test_observations_only_mature_the_matching_instrument(tmp_path) -> None:
     assert lab.pending_count == 1
 
 
+def test_missed_target_expires_instead_of_using_a_later_observation(tmp_path) -> None:
+    lab = OnlineResearchLab(tmp_path / "online.sqlite3", algorithms=("online_logistic",))
+    lab.issue(
+        {"feature": 1.0},
+        timestamp=NOW,
+        anchor_price=100.0,
+        horizon_min=1,
+        instrument="TEST",
+    )
+
+    assert lab.observe(
+        timestamp=NOW + timedelta(minutes=2), price=110.0, instrument="TEST"
+    ) == []
+    assert lab.pending_count == 0
+    assert lab.expired_count == 1
+    assert lab.scorecards()[0].all_time.sample_count == 0
+    assert lab.algorithms["online_logistic"].state_dict()["samples_seen"] == 0
+
+
 def test_scorecard_reports_calibration_profit_loss_and_conservative_trust() -> None:
     records = []
     for index in range(100):

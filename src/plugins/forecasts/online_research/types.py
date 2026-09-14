@@ -62,6 +62,7 @@ class PredictionRecord:
     trust_at_issue: float
     cost_bps: float
     features: dict[str, float]
+    status: str = "pending"
     matured_at: datetime | None = None
     actual_price: float | None = None
     actual_return_bps: float | None = None
@@ -73,7 +74,15 @@ class PredictionRecord:
 
     @property
     def is_scored(self) -> bool:
-        return self.matured_at is not None
+        # ``matured_at`` keeps compatibility with records created by research
+        # notebooks before explicit outcome status was introduced.
+        return self.status == "scored" or (
+            self.status == "pending" and self.matured_at is not None
+        )
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.is_scored or self.status == "expired"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +99,7 @@ class PredictionRecord:
             "trust_at_issue": self.trust_at_issue,
             "cost_bps": self.cost_bps,
             "features": dict(self.features),
+            "status": self.status,
             "matured_at": self.matured_at.isoformat() if self.matured_at else None,
             "actual_price": self.actual_price,
             "actual_return_bps": self.actual_return_bps,
@@ -120,6 +130,7 @@ class PredictionRecord:
                 str(name): float(value)
                 for name, value in dict(payload.get("features", {})).items()
             },
+            status=str(payload.get("status", "scored" if matured else "pending")),
             matured_at=datetime.fromisoformat(str(matured)) if matured else None,
             actual_price=_optional_float(payload.get("actual_price")),
             actual_return_bps=_optional_float(payload.get("actual_return_bps")),
