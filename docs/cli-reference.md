@@ -160,7 +160,7 @@ traded.
 | `--web` | off | Render through the local Flask browser dashboard |
 | `--web-host` | plugin config | Override the web bind host |
 | `--web-port` | plugin config | Override the web bind port |
-| `--open-browser / --no-open-browser` | on | Open the browser automatically in web mode |
+| `--open-browser / --no-open-browser` | plugin config (`on`) | Override automatic browser opening in web mode |
 
 Offline, the feed is **paced against the wall clock** — a one-minute bar takes a
 minute — so the projected candles have seconds to move in. `--speed 60` makes a

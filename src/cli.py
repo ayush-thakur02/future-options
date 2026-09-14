@@ -325,10 +325,10 @@ def dashboard(
     web: bool = typer.Option(False, "--web", help="Open the local Flask web dashboard"),
     web_host: str | None = typer.Option(None, "--web-host", help="Web bind host (default from renderer config)"),
     web_port: int | None = typer.Option(None, "--web-port", help="Web bind port (default from renderer config)"),
-    open_browser: bool = typer.Option(
-        True,
+    open_browser: bool | None = typer.Option(
+        None,
         "--open-browser/--no-open-browser",
-        help="Open the web dashboard in the default browser",
+        help="Override whether the web dashboard opens in the default browser",
     ),
 ) -> None:
     """Run the dashboard: call, index and put, with the next three candles projected."""
@@ -360,14 +360,13 @@ def dashboard(
         ),
     )
     if web:
-        web_params = {
-            "refresh_ms": max(int(refresh * 1000), 100),
-            "open_browser": open_browser,
-        }
+        web_params = {}
         if web_host is not None:
             web_params["host"] = web_host.strip()
         if web_port is not None:
             web_params["port"] = web_port
+        if open_browser is not None:
+            web_params["open_browser"] = open_browser
         session.renderer = session.kernel.build("renderer:web", **web_params)
     else:
         session.renderer.view = view
