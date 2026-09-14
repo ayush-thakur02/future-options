@@ -344,6 +344,41 @@ def test_scorecard_keeps_a_distinct_rolling_window(tmp_path) -> None:
     assert card.rolling.sample_count == 2
 
 
+def test_daily_accuracy_only_counts_predictions_matured_on_that_day(tmp_path) -> None:
+    lab = OnlineResearchLab(tmp_path / "online.sqlite3", algorithms=("online_logistic",))
+    lab.issue(
+        {"x": 1.0},
+        timestamp=NOW,
+        anchor_price=100.0,
+        horizon_min=1,
+        instrument="TEST",
+    )
+    lab.observe(timestamp=NOW + timedelta(minutes=1), price=101.0, instrument="TEST")
+    next_day = NOW + timedelta(days=1)
+    lab.issue(
+        {"x": 1.0},
+        timestamp=next_day,
+        anchor_price=100.0,
+        horizon_min=1,
+        instrument="TEST",
+    )
+    lab.observe(timestamp=next_day + timedelta(minutes=1), price=99.0, instrument="TEST")
+
+    first = lab.daily_accuracy(NOW.date(), timezone=UTC)
+    second = lab.daily_accuracy(next_day.date(), timezone=UTC)
+
+    assert first == {
+        "date": NOW.date().isoformat(),
+        "samples": 1,
+        "hits": 1,
+        "misses": 0,
+        "accuracy": 1.0,
+    }
+    assert second["samples"] == 1
+    assert second["hits"] == 0
+    assert second["accuracy"] == 0.0
+
+
 def test_invalid_inputs_never_enter_the_persistent_ledger(tmp_path) -> None:
     lab = OnlineResearchLab(tmp_path / "online.sqlite3")
     with pytest.raises(ValueError, match="positive"):

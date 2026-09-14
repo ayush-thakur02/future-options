@@ -6,7 +6,7 @@ import math
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -216,6 +216,37 @@ class OnlineResearchLab:
                 )
             return cards
 
+    def daily_accuracy(
+        self,
+        day: date | None = None,
+        *,
+        timezone: tzinfo = UTC,
+    ) -> dict[str, int | float | str]:
+        """Aggregate matured learner predictions for one local calendar day.
+
+        A market day must be selected after converting each maturity timestamp
+        to the market timezone. Grouping the persisted UTC timestamps directly
+        would put the first hours of an Indian session on the wrong date.
+        """
+        selected_day = day or datetime.now(timezone).date()
+        with self._lock:
+            records = [
+                record
+                for record in self._records
+                if record.is_scored
+                and record.matured_at is not None
+                and _in_local_day(record.matured_at, selected_day, timezone)
+            ]
+        samples = len(records)
+        hits = sum(record.hit is True for record in records)
+        return {
+            "date": selected_day.isoformat(),
+            "samples": samples,
+            "hits": hits,
+            "misses": samples - hits,
+            "accuracy": hits / samples if samples else 0.0,
+        }
+
     def records(
         self,
         *,
@@ -311,6 +342,11 @@ def _normalise_time(timestamp: datetime) -> datetime:
     if timestamp.tzinfo is None:
         return timestamp.replace(tzinfo=UTC)
     return timestamp.astimezone(UTC)
+
+
+def _in_local_day(timestamp: datetime, day: date, timezone: tzinfo) -> bool:
+    normalised = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=UTC)
+    return normalised.astimezone(timezone).date() == day
 
 
 def _probability(value: float) -> float:

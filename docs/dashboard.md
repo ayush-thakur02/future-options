@@ -30,14 +30,17 @@ local snapshot API and shows:
 - zoom-sharp SVG candlestick graphs for index, call, and put, with blue projected
   candles on the same price scale as printed candles;
 - a separate cost-gated BUY/HOLD/SELL decision card for index, call, and put,
-  including the current reason, target, invalidation range, and the exact
-  probability/trust rules that must be satisfied;
+  including the current reason, target, invalidation range, and explicit
+  instrument meaning (a long put is bearish on the index but bullish on put
+  premium);
 - an index/call/put-by-horizon prediction matrix with P(up), trust, target time,
   projected close, expected move, cost gate, and measured hit rate;
 - realtime learner sample counts, hit/miss results, all-time and rolling accuracy,
-  net basis points, drawdown, and trust;
-- a searchable strategy matrix whose top row aggregates UP, DOWN, HOLD, average
-  confidence, average trust, and net breadth across all 30 strategies; each rule
+  net basis points, drawdown, and trust, plus today's aggregate AI accuracy across
+  the index, call, and put in the overview;
+- a searchable strategy matrix whose three summary rows independently aggregate
+  UP, DOWN, HOLD, average confidence, average trust, and net breadth for the
+  index, call, and put; each rule
   then shows per-leg state, current confidence, trust, hit/miss, and net result;
 - EMA 9/21/50/200, VWAP, SuperTrend, trend, momentum, volatility, flow, channel,
   regime, and quantitative indicators used by the strategies and online models;

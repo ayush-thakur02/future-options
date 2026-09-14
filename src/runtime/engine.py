@@ -706,6 +706,7 @@ class Engine:
         return {
             "signals": signals,
             "scorecards": cards,
+            "today": self.online_lab.daily_accuracy(timezone=IST),
             "pending": self.online_lab.pending_count,
             "expired": self.online_lab.expired_count,
             "policy": {

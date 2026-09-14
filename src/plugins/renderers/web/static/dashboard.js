@@ -76,6 +76,31 @@ function spotLeg(payload) {
   return legs.find((leg) => leg.label === "INDEX") || legs[0] || null;
 }
 
+function probabilityLabel(leg, compact = false) {
+  if (leg.kind === "CE" || leg.kind === "PE") return compact ? "P(PREM ↑)" : "P(PREMIUM UP)";
+  return compact ? "P(INDEX ↑)" : "P(INDEX UP)";
+}
+
+function legDirectionContext(leg) {
+  if (leg.kind === "CE") return "CALL PREMIUM ↑ ≈ INDEX ↑";
+  if (leg.kind === "PE") return "PUT PREMIUM ↑ ≈ INDEX ↓";
+  return "INDEX PRICE DIRECTION";
+}
+
+function actionMeaning(leg, action) {
+  if (action === "BUY") {
+    if (leg.kind === "CE") return "LONG CALL · BULLISH INDEX";
+    if (leg.kind === "PE") return "LONG PUT · BEARISH INDEX";
+    return "LONG INDEX · BULLISH";
+  }
+  if (action === "SELL") {
+    if (leg.kind === "CE") return "EXIT / SHORT CALL · BEARISH INDEX";
+    if (leg.kind === "PE") return "EXIT / SHORT PUT · BULLISH INDEX";
+    return "SHORT INDEX · BEARISH";
+  }
+  return leg.kind === "CE" || leg.kind === "PE" ? `NO ${leg.label} TRADE` : "NO INDEX TRADE";
+}
+
 function metric(label, value, sub = "", tone = "") {
   const card = node("article", "metric");
   card.append(node("div", "label", label));
@@ -90,6 +115,14 @@ function renderOverview(payload) {
   const market = spot?.market || {};
   const chain = payload.chain || {};
   const change = finite(market.change) || 0;
+  const today = legList(payload).reduce((total, leg) => {
+    const summary = leg.market?.research?.ai?.today || {};
+    total.samples += Number(summary.samples || 0);
+    total.hits += Number(summary.hits || 0);
+    if (!total.date && summary.date) total.date = summary.date;
+    return total;
+  }, { samples: 0, hits: 0, date: "" });
+  const todayAccuracy = today.samples ? today.hits / today.samples : null;
   const items = [
     metric("instrument", payload.symbol || market.symbol || "—", `source ${market.source || "—"}`, "cyan"),
     metric("spot / last", fmt(payload.spot ?? market.last_price), `${signed(market.change)} · ${signed(market.change_pct, 2, "%")}`, change >= 0 ? "up" : "down"),
@@ -97,6 +130,12 @@ function renderOverview(payload) {
     metric("option chain", chain.expiry || "—", `PCR ${fmt(chain.pcr)} · ATM ${fmt(chain.atm_strike, 0)}`),
     metric("feed state", String(payload.status || "waiting").toUpperCase(), `tick ${age(market.last_tick_ts)}`, age(market.last_tick_ts).startsWith("0") ? "up" : ""),
     metric("research state", market.research?.ai ? "AUTO-LEARNING" : "WARMING", `${market.research?.workers ?? 1} CPU · ${fmt(market.research?.compute_ms, 1)}ms/bar`, "prediction"),
+    metric(
+      "today's accuracy",
+      today.samples ? percent(todayAccuracy, 1) : "WARMING",
+      today.samples ? `${today.hits}/${today.samples} matured AI outcomes · all legs` : "no AI outcomes matured today",
+      today.samples ? (todayAccuracy >= 0.5 ? "up" : "down") : "hold",
+    ),
   ];
   root.replaceChildren(...items);
 }
@@ -144,13 +183,6 @@ function decisionStat(label, value, tone = "") {
   return item;
 }
 
-function decisionRule(label, copy, tone) {
-  const item = node("div", "decision-rule");
-  item.append(node("b", tone, label));
-  item.append(node("span", "", copy));
-  return item;
-}
-
 function evaluateDecision(leg) {
   const market = leg.market || {};
   const ai = signalFor(market, 1);
@@ -180,7 +212,7 @@ function evaluateDecision(leg) {
     if ((finite(ai.trust_score) || 0) < (finite(policy.min_trust_for_action) || 0)) {
       reason = `HOLD: trust ${percent(ai.trust_score)} is below the ${percent(policy.min_trust_for_action)} action floor.`;
     } else {
-      reason = `HOLD: P(up) ${fmt(ai.p_up, 3)} is inside the neutral ${fmt(policy.sell_probability, 2)}–${fmt(policy.buy_probability, 2)} zone.`;
+      reason = `HOLD: ${probabilityLabel(leg)} ${fmt(ai.p_up, 3)} is inside the neutral ${fmt(policy.sell_probability, 2)}–${fmt(policy.buy_probability, 2)} zone.`;
     }
   } else if (!verdictPass) {
     action = "HOLD";
@@ -192,7 +224,7 @@ function evaluateDecision(leg) {
     reason = `HOLD: AI says ${candidate}, but the cost/breakeven verdict says ${verdictAction}; wait for agreement.`;
   } else {
     const verb = candidate === "BUY" ? "BUY" : isOption ? "SELL / EXIT" : "SELL";
-    reason = `${verb} setup: realtime AI and the cost-gated ${verdictAction || "move"} verdict agree. Re-check on every one-second update.`;
+    reason = `${verb} setup (${actionMeaning(leg, candidate)}): realtime AI and the cost-gated ${verdictAction || "move"} verdict agree. Re-check on every one-second update.`;
   }
 
   const edge = verdict
@@ -222,35 +254,30 @@ function renderDecisions(payload) {
   const root = byId("decision-grid");
   const cards = legList(payload).map((leg) => {
     const result = evaluateDecision(leg);
-    const { ai, policy, projected, verdict } = result;
+    const { ai, projected } = result;
     const actionTone = directionClass(result.action);
     const card = node("article", `decision-card action-${result.action.toLowerCase()}`);
     const head = node("div", "decision-head");
     const identity = node("div");
     identity.append(node("div", "decision-instrument", leg.strike ? `${leg.label} ${fmt(leg.strike, 0)}` : leg.label));
     identity.append(node("div", "decision-symbol", leg.market?.symbol || "—"));
-    head.append(identity, node("div", `decision-action ${actionTone}`, result.action));
+    const actionBadge = node("div", `decision-action ${actionTone}`);
+    actionBadge.append(
+      node("strong", "", result.action),
+      node("small", "", actionMeaning(leg, result.action)),
+    );
+    actionBadge.title = `${legDirectionContext(leg)}. Actions refer to the instrument or premium shown.`;
+    head.append(identity, actionBadge);
 
     const stats = node("div", "decision-stats");
     stats.append(
-      decisionStat("P(UP)", fmt(ai?.p_up, 3)),
+      decisionStat(probabilityLabel(leg), fmt(ai?.p_up, 3)),
       decisionStat("TRUST", percent(ai?.trust_score)),
       decisionStat("EDGE / GATE", result.edgeText, result.edgeText === "IV-RICH PASS" || finite(result.edge) > 0 ? "up" : "hold"),
       decisionStat("TARGET / INVALID", `${fmt(projected?.close)} / ${result.invalidation}`),
     );
 
-    const rules = node("div", "decision-rules");
-    const trustFloor = percent(policy.min_trust_for_action);
-    const costRule = verdict
-      ? `positive breakeven edge and a LONG verdict; current ${verdict.action}`
-      : `projected move above ${fmt(policy.cost_bps, 1)}bp costs`;
-    rules.append(
-      decisionRule("BUY WHEN", `P(up) ≥ ${fmt(policy.buy_probability, 2)}, trust ≥ ${trustFloor}, ${costRule}.`, "up"),
-      decisionRule("HOLD WHEN", `probability is neutral, trust is unproven, costs are not cleared, or AI and verdict disagree.`, "hold"),
-      decisionRule("SELL WHEN", `P(up) ≤ ${fmt(policy.sell_probability, 2)}, trust ≥ ${trustFloor}, and the cost gate confirms SHORT. For options this can mean exit/write risk.`, "down"),
-    );
-
-    card.append(head, node("div", "decision-summary", result.reason), stats, rules);
+    card.append(head, node("div", "decision-context", legDirectionContext(leg)), node("div", "decision-summary", result.reason), stats);
     return card;
   });
   root.replaceChildren(...cards);
@@ -284,7 +311,7 @@ function renderLegs(payload) {
     wrap.append(chart);
 
     const reads = node("div", "leg-readouts");
-    reads.append(readout("AUTO-AI +1", ai ? `${ai.action} · P↑ ${fmt(ai.p_up, 2)}` : "WARMING", ai ? directionClass(ai.action) : "muted"));
+    reads.append(readout("AUTO-AI +1", ai ? `${ai.action} · ${probabilityLabel(leg, true)} ${fmt(ai.p_up, 2)}` : "WARMING", ai ? directionClass(ai.action) : "muted"));
     if (leg.kind === "CE" || leg.kind === "PE") {
       reads.append(readout("DELTA / IV", `${signed(leg.greeks?.delta, 2)} · ${percent(leg.greeks?.iv, 1)}`));
       reads.append(readout("VERDICT / EDGE", leg.verdict ? `${leg.verdict.action} · ${signed(leg.verdict.edge_bps, 1, "bp")}` : "—", directionClass(leg.verdict?.action)));
@@ -568,15 +595,15 @@ function showPredictionCalculation(leg, horizon, item, projected, stats) {
   const cost = finite(policy.cost_bps) || 0;
   showCalculation({
     kicker: `${leg.label} +${horizon} CONSENSUS`,
-    title: `${item.action} · P(up) ${fmt(item.p_up, 4)}`,
-    lead: "The cell combines all online learners with a minimum 5% vote weight, applies the configured probability/trust policy, then compares the projected move with estimated round-trip cost.",
+    title: `${item.action} · ${probabilityLabel(leg)} ${fmt(item.p_up, 4)}`,
+    lead: `The cell predicts ${leg.kind === "CE" || leg.kind === "PE" ? "this option premium" : "the index"}, combines all online learners with a minimum 5% vote weight, applies the configured probability/trust policy, then compares the projected move with estimated round-trip cost. ${actionMeaning(leg, item.action)}.`,
     metrics: [
       ["TARGET", `${timeOnly(item.target_at)} IST`, ""],
       ["CONFIDENCE", percent(item.confidence), "prediction"],
       ["TRUST", percent(item.trust_score), "cyan"],
       ["MOVE − COST", signed(move - cost, 2, "bp"), move > cost ? "up" : "hold"],
     ],
-    formula: `weightᵢ = max(learner_trustᵢ, 0.05)\nP(up) = Σ(Pᵢ × weightᵢ) / Σ(weightᵢ)\n      = ${numerator.toFixed(4)} / ${denominator.toFixed(4)} = ${denominator ? (numerator / denominator).toFixed(4) : "0.5000"}\nensemble_trust = mean(learner trust) = ${fmt(item.trust_score, 4)}\nBUY if P(up) ≥ ${fmt(policy.buy_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\nSELL if P(up) ≤ ${fmt(policy.sell_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\npost_cost_edge = |${fmt(projected?.expected_move_bps, 2)}| − ${fmt(cost, 2)} = ${signed(move - cost, 2, "bp")}`,
+    formula: `direction basis = ${legDirectionContext(leg)}\nweightᵢ = max(learner_trustᵢ, 0.05)\nP(up) = Σ(Pᵢ × weightᵢ) / Σ(weightᵢ)\n      = ${numerator.toFixed(4)} / ${denominator.toFixed(4)} = ${denominator ? (numerator / denominator).toFixed(4) : "0.5000"}\nensemble_trust = mean(learner trust) = ${fmt(item.trust_score, 4)}\nBUY if P(up) ≥ ${fmt(policy.buy_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\nSELL if P(up) ≤ ${fmt(policy.sell_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\npost_cost_edge = |${fmt(projected?.expected_move_bps, 2)}| − ${fmt(cost, 2)} = ${signed(move - cost, 2, "bp")}`,
     details: [
       ...members.map((member) => `${member.name}: P(up) ${fmt(member.p_up, 4)}, action ${member.action}, trust ${percent(member.trust_score)}.`),
       projected ? `Projected OHLC: ${fmt(projected.open)} / ${fmt(projected.high)} / ${fmt(projected.low)} / ${fmt(projected.close)} at confidence ${percent(projected.confidence)}.` : "The projected candle is still warming.",
@@ -641,7 +668,7 @@ function predictionCell(leg, horizon) {
   const head = node("div", "prediction-cell-head");
   head.append(tag(item.action), node("time", "", `${timeOnly(item.target_at)} IST`));
   const probability = node("div", "prediction-prob");
-  probability.append(node("span", "", "P(UP)"), probabilityBar(item.p_up), node("b", directionClass(item.action), fmt(item.p_up, 2)));
+  probability.append(node("span", "", probabilityLabel(leg, true)), probabilityBar(item.p_up), node("b", directionClass(item.action), fmt(item.p_up, 2)));
 
   const detail = node("div", "prediction-detail");
   detail.append(
@@ -698,37 +725,52 @@ function renderPredictions(payload) {
 
 function renderStrategies(payload) {
   const legs = legList(payload);
-  const spot = spotLeg(payload);
-  const signals = spot?.market?.signals || [];
+  const signalMap = new Map();
+  legs.forEach((leg) => {
+    (leg.market?.signals || []).forEach((signal) => {
+      if (!signalMap.has(signal.strategy) || leg.label === "INDEX") signalMap.set(signal.strategy, signal);
+    });
+  });
+  const signals = [...signalMap.values()];
   const normalized = strategyQuery.trim().toLowerCase();
   const filtered = signals.filter((signal) => !normalized || signal.strategy.toLowerCase().includes(normalized));
-  const counts = { UP: 0, DOWN: 0, HOLD: 0 };
-  signals.forEach((signal) => {
-    const active = signal.meta?.state === "ACTIVE";
-    const bucket = active && signal.direction === "UP"
-      ? "UP"
-      : active && signal.direction === "DOWN"
-        ? "DOWN"
-        : "HOLD";
-    counts[bucket] += 1;
+  const summaryRows = legs.map((leg) => {
+    const legSignals = leg.market?.signals || [];
+    const counts = { UP: 0, DOWN: 0, HOLD: 0 };
+    legSignals.forEach((signal) => {
+      const active = signal.meta?.state === "ACTIVE";
+      const bucket = active && signal.direction === "UP"
+        ? "UP"
+        : active && signal.direction === "DOWN"
+          ? "DOWN"
+          : "HOLD";
+      counts[bucket] += 1;
+    });
+    const sampleCount = legSignals.length;
+    const divisor = sampleCount || 1;
+    const averageConfidence = legSignals.reduce((sum, signal) => sum + (finite(signal.strength) || 0), 0) / divisor;
+    const averageTrust = legSignals.reduce((sum, signal) => sum + (finite(signal.meta?.trust_score) || 0), 0) / divisor;
+    const netView = (counts.UP - counts.DOWN) / divisor;
+    const directionLabel = leg.kind === "CE" || leg.kind === "PE" ? "PREMIUM" : "INDEX";
+    const values = [
+      ["LEG / DIRECTION", legDirectionContext(leg), "cyan"],
+      [`${directionLabel} UP`, `${percent(counts.UP / divisor)} · ${counts.UP}/${sampleCount}`, "up"],
+      [`${directionLabel} DOWN`, `${percent(counts.DOWN / divisor)} · ${counts.DOWN}/${sampleCount}`, "down"],
+      ["HOLD / WAIT", `${percent(counts.HOLD / divisor)} · ${counts.HOLD}/${sampleCount}`, "hold"],
+      ["AVG CONFIDENCE", percent(averageConfidence), "prediction"],
+      ["AVG TRUST", percent(averageTrust), "cyan"],
+      ["NET BREADTH", signed(netView, 2), netView > 0 ? "up" : netView < 0 ? "down" : "hold"],
+    ];
+    const row = node("div", "strategy-summary-row");
+    row.title = `${legDirectionContext(leg)}. UP and DOWN refer to the displayed instrument's price.`;
+    values.forEach(([label, value, tone]) => {
+      const item = node("div", "strategy-summary-item");
+      item.append(node("label", "", label), node("strong", tone, value));
+      row.append(item);
+    });
+    return row;
   });
-  const total = signals.length || 1;
-  const averageConfidence = signals.reduce((sum, signal) => sum + (finite(signal.strength) || 0), 0) / total;
-  const averageTrust = signals.reduce((sum, signal) => sum + (finite(signal.meta?.trust_score) || 0), 0) / total;
-  const netView = (counts.UP - counts.DOWN) / total;
-  const summary = [
-    ["UP", `${percent(counts.UP / total)} · ${counts.UP}/${signals.length}`, "up"],
-    ["DOWN", `${percent(counts.DOWN / total)} · ${counts.DOWN}/${signals.length}`, "down"],
-    ["HOLD", `${percent(counts.HOLD / total)} · ${counts.HOLD}/${signals.length}`, "hold"],
-    ["AVG CONFIDENCE", percent(averageConfidence), "prediction"],
-    ["AVG TRUST", percent(averageTrust), "cyan"],
-    ["NET BREADTH", signed(netView, 2), netView > 0 ? "up" : netView < 0 ? "down" : "hold"],
-  ].map(([label, value, tone]) => {
-    const item = node("div", "strategy-summary-item");
-    item.append(node("label", "", label), node("strong", tone, value));
-    return item;
-  });
-  byId("strategy-summary").replaceChildren(...summary);
+  byId("strategy-summary").replaceChildren(...summaryRows);
 
   const rows = filtered.map((signal) => {
     const states = legs.map((leg) => {

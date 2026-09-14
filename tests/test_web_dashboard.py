@@ -86,6 +86,11 @@ def test_web_page_is_a_self_contained_terminal_dashboard() -> None:
     assert b"createElementNS" in script.data
     assert b"ResizeObserver" in script.data
     assert b"renderDecisions" in script.data
+    assert b"today's accuracy" in script.data
+    assert b"strategy-summary-row" in script.data
+    assert b"P(PREMIUM UP)" in script.data
+    assert b"decisionRule(" not in script.data
+    assert b"decision-rules" not in script.data
     assert b"prediction-row" in script.data
     assert b"showStrategyCalculation" in script.data
     assert b"showAiCalculation" in script.data
