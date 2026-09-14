@@ -64,6 +64,9 @@ def test_web_page_is_a_self_contained_terminal_dashboard() -> None:
     assert page.status_code == 200
     assert b"NIFTY PULSE" in page.data
     assert b"REALTIME AUTO-AI" in page.data
+    assert b"BUY / HOLD / SELL DECISION DESK" in page.data
+    assert b"LIVE PREDICTION MATRIX" in page.data
+    assert b'id="calculation-modal"' in page.data
     assert b'class="topbar"' not in page.data
     assert b"dashboard.css" in page.data
     assert b"dashboard.js" in page.data
@@ -79,6 +82,12 @@ def test_web_page_is_a_self_contained_terminal_dashboard() -> None:
     assert b"drawChart" in script.data
     assert b"createElementNS" in script.data
     assert b"ResizeObserver" in script.data
+    assert b"renderDecisions" in script.data
+    assert b"prediction-row" in script.data
+    assert b"showStrategyCalculation" in script.data
+    assert b"showAiCalculation" in script.data
+    assert b"condition / measured result" not in script.data
+    assert b"stroke-dasharray" not in script.data
 
 
 def test_web_polling_is_never_slower_than_one_second() -> None:

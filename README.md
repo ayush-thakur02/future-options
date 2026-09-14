@@ -115,6 +115,12 @@ uv run niftypulse backtest --strategy ensemble --horizon 5
 uv run niftypulse backtest --strategy ml --horizon 5 --sweep
 ```
 
+The browser dashboard uses white, zoom-sharp SVG charts and refreshes every
+second. Its per-leg decision desk and prediction matrix apply AI probability,
+measured trust, projected movement, and transaction-cost/breakeven gates together.
+Click a strategy, AI learner, prediction cell, or indicator to inspect its live
+calculation and formula.
+
 ## Tuning for your costs
 
 The hurdle is only as good as the cost inputs. Adjust these in

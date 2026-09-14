@@ -309,7 +309,17 @@ class Engine:
             measured = self.rule_stats.get(name, {"scored": 0, "hits": 0, "trust_score": 0.0})
             signals.append(Signal(ts=self.history.index[-1].to_pydatetime(), strategy=name,
                                   direction=Direction.from_value(value, 0.15), strength=abs(value),
-                                  reason=reason, meta={"state": state, **measured}))
+                                  reason=reason, meta={
+                                      "state": state,
+                                      "raw_score": value,
+                                      "active_threshold": 0.15,
+                                      "category": rule.category,
+                                      "description": rule.description,
+                                      "trust_min_samples": getattr(
+                                          self.performance, "min_trust_samples", 50
+                                      ),
+                                      **measured,
+                                  }))
         return signals
 
     def _strategy_extras(self) -> dict:
@@ -564,13 +574,34 @@ class Engine:
         if not self.features.empty:
             last = self.features.iloc[-1]
             for key in (
-                "rsi_14", "adx_14", "atr_norm", "macd_hist", "stoch_k", "bb_pct_b",
-                "vwap_dist", "efficiency_ratio_10", "choppiness_14", "sortino_30",
-                "autocorr_1_50", "variance_ratio_5_60", "direction_entropy_50", "amihud_20",
+                "ema_dist_9", "ema_dist_21", "ema_dist_50", "ema_dist_200",
+                "ema_9_21_spread", "ema_21_50_spread", "ema_50_200_spread",
+                "supertrend_dir", "supertrend_dist", "adx_14", "plus_di", "minus_di",
+                "di_spread", "aroon_osc", "vortex_spread", "slope_20", "r2_20",
+                "roc_5", "roc_10", "roc_20", "rsi_7", "rsi_14", "rsi_21",
+                "macd_line", "macd_signal", "macd_hist", "stoch_k", "stoch_d",
+                "williams_r", "cci_20", "mfi_14", "cmf_20", "atr_norm", "atr_ratio",
+                "bb_pct_b", "bb_bandwidth", "bb_squeeze", "keltner_position",
+                "donchian_position", "vwap_dist", "obv_slope_20", "efficiency_ratio_10",
+                "hurst_100", "kama_dist_10", "dema_dist_20", "tema_dist_20", "ppo_hist",
+                "choppiness_14", "sortino_30", "autocorr_1_50", "variance_ratio_5_60",
+                "direction_entropy_50", "amihud_20",
             ):
                 if key in self.features.columns:
                     value = last[key]
                     indicators[key] = float(value) if pd.notna(value) else float("nan")
+            reference_close = float(self.history["close"].iloc[-1])
+            for window in (9, 21, 50, 200):
+                distance = indicators.get(f"ema_dist_{window}")
+                if distance is not None and pd.notna(distance) and 1.0 + distance != 0:
+                    indicators[f"ema_{window}"] = reference_close / (1.0 + distance)
+            for name, distance_key in (
+                ("supertrend", "supertrend_dist"),
+                ("vwap", "vwap_dist"),
+            ):
+                distance = indicators.get(distance_key)
+                if distance is not None and pd.notna(distance) and 1.0 + distance != 0:
+                    indicators[name] = reference_close / (1.0 + distance)
 
         return MarketSnapshot(
             ts=datetime.now(IST),
@@ -639,6 +670,8 @@ class Engine:
             return {}
         signals = {
             horizon: {
+                "issued_at": signal.issued_at.isoformat(),
+                "target_at": signal.target_at.isoformat(),
                 "action": signal.action.value,
                 "p_up": signal.p_up,
                 "confidence": signal.confidence,
@@ -675,6 +708,12 @@ class Engine:
             "scorecards": cards,
             "pending": self.online_lab.pending_count,
             "expired": self.online_lab.expired_count,
+            "policy": {
+                "buy_probability": self.online_lab.buy_probability,
+                "sell_probability": self.online_lab.sell_probability,
+                "min_trust_for_action": self.online_lab.min_trust_for_action,
+                "cost_bps": self._research_cost_bps(),
+            },
         }
 
     @synchronized

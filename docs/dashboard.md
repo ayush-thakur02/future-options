@@ -29,12 +29,30 @@ local snapshot API and shows:
 
 - zoom-sharp SVG candlestick graphs for index, call, and put, with blue projected
   candles on the same price scale as printed candles;
-- current per-leg AI action, probability, confidence, trust, Greeks, verdict,
-  projection path, and price movement;
+- a separate cost-gated BUY/HOLD/SELL decision card for index, call, and put,
+  including the current reason, target, invalidation range, and the exact
+  probability/trust rules that must be satisfied;
+- an index/call/put-by-horizon prediction matrix with P(up), trust, target time,
+  projected close, expected move, cost gate, and measured hit rate;
 - realtime learner sample counts, hit/miss results, all-time and rolling accuracy,
   net basis points, drawdown, and trust;
-- the live prediction matrix, searchable strategy states, indicator readings,
-  frozen forward-score results, feed freshness, queues, and cost assumptions.
+- a searchable strategy matrix whose top row aggregates UP, DOWN, HOLD, average
+  confidence, average trust, and net breadth across all 30 strategies; each rule
+  then shows per-leg state, current confidence, trust, hit/miss, and net result;
+- EMA 9/21/50/200, VWAP, SuperTrend, trend, momentum, volatility, flow, channel,
+  regime, and quantitative indicators used by the strategies and online models;
+- frozen forward-score results, feed freshness, queues, and cost assumptions.
+
+Click any strategy row, online AI row, prediction cell, or indicator to open the
+live calculation inspector. It shows the current values, the formula/policy used,
+the exact action threshold comparison, and matured performance evidence. This is
+also where the distinction between probability, confidence, trust, and post-cost
+edge is made explicit.
+
+Projected SVG bars contain only their blue OHLC candles and a subtle solid
+printed/projected boundary; there is no dotted target path. Hover a bar for its
+open, high, low, close, and confidence, or read those values in the strip below
+the chart.
 
 The server is read-only and defaults to `127.0.0.1:5050`. Binding it to the
 network is explicit:

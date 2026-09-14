@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from core.settings import Settings
 from kernel import Kernel
@@ -46,6 +47,13 @@ def test_engine_issues_and_scores_each_online_algorithm_after_research_is_enable
     assert snapshot["pending"] == len(ALGORITHMS) * 2
     assert all(card["samples"] == 1 for card in snapshot["scorecards"])
     assert {card["algorithm"] for card in snapshot["scorecards"]} == set(ALGORITHMS)
+    assert snapshot["policy"] == {
+        "buy_probability": 0.56,
+        "sell_probability": 0.44,
+        "min_trust_for_action": 0.15,
+        "cost_bps": settings.cost_hurdle_bps(),
+    }
+    assert all(signal["target_at"] for signal in snapshot["signals"].values())
     engine.close()
 
 
@@ -64,3 +72,29 @@ def test_option_engine_supplies_index_anchor_to_statistical_plugins(tmp_path) ->
     }
     assert statistical
     assert all(signal.meta["state"] != "N/A" for signal in statistical.values())
+
+
+def test_snapshot_exposes_strategy_calculations_and_indicators(tmp_path) -> None:
+    settings = Settings(data_dir=tmp_path, model_dir=tmp_path / "models")
+    engine = Engine(Kernel.bootstrap(settings, with_entry_points=False)).bootstrap(
+        generate_candles(days=4, seed=904)
+    )
+
+    snapshot = engine.snapshot()
+    ema = next(signal for signal in snapshot.signals if signal.strategy == "ema_trend")
+    assert ema.meta["raw_score"] == pytest.approx(engine._latest_scores["ema_trend"])
+    assert ema.meta["active_threshold"] == 0.15
+    assert ema.meta["category"] == "trend"
+    assert ema.meta["description"]
+    assert {
+        "ema_9",
+        "ema_21",
+        "ema_50",
+        "ema_200",
+        "supertrend",
+        "vwap",
+        "macd_hist",
+        "rsi_14",
+        "adx_14",
+        "donchian_position",
+    } <= set(snapshot.indicators)

@@ -12,28 +12,39 @@
   <main>
     <section id="overview" class="metric-grid" aria-label="Market overview"></section>
 
+    <section class="section-block decision-block">
+      <div class="section-heading">
+        <h2><span>01</span> BUY / HOLD / SELL DECISION DESK</h2>
+        <p>COST-GATED RESEARCH CLASSIFICATION · EXPECTED EDGE IS NOT GUARANTEED PROFIT</p>
+      </div>
+      <div id="decision-grid" class="decision-grid"></div>
+    </section>
+
     <section class="section-block">
       <div class="section-heading">
-        <h2><span>01</span> LIVE INSTRUMENTS</h2>
+        <h2><span>02</span> LIVE INSTRUMENTS</h2>
         <p>PRINTED CANDLES <b class="up">■</b> / <b class="down">■</b> · PROJECTED <b class="projected">■</b></p>
       </div>
       <div id="leg-grid" class="leg-grid"></div>
     </section>
 
-    <section class="split-grid">
+    <section class="section-block">
       <article class="terminal-card">
         <div class="card-title">
-          <h2><span>02</span> REALTIME AUTO-AI</h2>
+          <h2><span>03</span> LIVE PREDICTION MATRIX</h2>
+          <small>INDEX / CALL / PUT × FORWARD HORIZON · REFRESHED EACH SECOND</small>
+        </div>
+        <div id="live-predictions" class="prediction-matrix"></div>
+      </article>
+    </section>
+
+    <section class="section-block">
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>04</span> REALTIME AUTO-AI</h2>
           <small>UPDATES AFTER EXACT TARGET CLOSE</small>
         </div>
         <div id="ai-scorecards" class="table-scroll"></div>
-      </article>
-      <article class="terminal-card">
-        <div class="card-title">
-          <h2><span>03</span> LIVE PREDICTIONS</h2>
-          <small>RESEARCH ONLY · NO ORDER PLACEMENT</small>
-        </div>
-        <div id="live-predictions" class="table-scroll"></div>
       </article>
     </section>
 
@@ -41,19 +52,20 @@
       <article class="terminal-card">
         <div class="card-title with-control">
           <div>
-            <h2><span>04</span> STRATEGY MATRIX</h2>
+            <h2><span>05</span> STRATEGY MATRIX</h2>
             <small>ACTIVE STATE + FORWARD SUCCESS/FAILURE</small>
           </div>
           <label class="search-label">
             <span>FILTER</span>
-            <input id="strategy-filter" type="search" placeholder="strategy / reason" autocomplete="off">
+            <input id="strategy-filter" type="search" placeholder="strategy name" autocomplete="off">
           </label>
         </div>
+        <div id="strategy-summary" class="strategy-summary"></div>
         <div id="strategies" class="table-scroll tall"></div>
       </article>
       <article class="terminal-card">
         <div class="card-title">
-          <h2><span>05</span> INDICATOR STATE</h2>
+          <h2><span>06</span> INDICATOR STATE</h2>
           <small>LATEST CLOSED BAR</small>
         </div>
         <div id="indicators" class="indicator-grid"></div>
@@ -63,14 +75,14 @@
     <section class="split-grid">
       <article class="terminal-card">
         <div class="card-title">
-          <h2><span>06</span> FORWARD SCORE</h2>
+          <h2><span>07</span> FORWARD SCORE</h2>
           <small>FROZEN PROJECTIONS VS ACTUAL CLOSE</small>
         </div>
         <div id="forward-scores" class="table-scroll"></div>
       </article>
       <article class="terminal-card">
         <div class="card-title">
-          <h2><span>07</span> SYSTEM / COST STATE</h2>
+          <h2><span>08</span> SYSTEM / COST STATE</h2>
           <small>DATA FRESHNESS + RESEARCH QUEUES</small>
         </div>
         <div id="system-state" class="system-grid"></div>
@@ -93,6 +105,17 @@
     <div class="loading-mark">&gt;_</div>
     <p>WARMING MARKET STATE<span class="blink">█</span></p>
   </div>
+
+  <dialog id="calculation-modal" class="calculation-modal" aria-labelledby="calculation-title">
+    <div class="modal-head">
+      <div>
+        <small id="calculation-kicker">LIVE CALCULATION</small>
+        <h2 id="calculation-title">Calculation inspector</h2>
+      </div>
+      <button id="calculation-close" class="modal-close" type="button" aria-label="Close calculation inspector">×</button>
+    </div>
+    <div id="calculation-content" class="calculation-content"></div>
+  </dialog>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
 </body>

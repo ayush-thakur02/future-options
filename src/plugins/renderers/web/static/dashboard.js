@@ -113,11 +113,148 @@ function signalFor(market, horizon = 1) {
   return signals[horizon] || signals[String(horizon)] || null;
 }
 
+function projectionFor(market, horizon = 1) {
+  return (market?.projections || []).find((item) => Number(item.horizon) === Number(horizon)) || null;
+}
+
+function timeOnly(timestamp) {
+  if (!timestamp) return "—";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return String(timestamp).slice(11, 16) || "—";
+  return parsed.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata",
+  });
+}
+
 function projectionItem(projected) {
   const item = node("div", "projection");
-  item.append(node("span", "", `+${projected.horizon ?? "?"} BAR`));
-  item.append(node("strong", "", `${fmt(projected.close)} · ${signed(projected.expected_move_bps ?? projected.change_bps, 1, "bp")}`));
+  item.append(node("span", "", `+${projected.horizon ?? "?"} · ${timeOnly(projected.ts)} IST`));
+  item.append(node("strong", "", `O ${fmt(projected.open)} → C ${fmt(projected.close)}`));
+  item.append(node("small", "", `H ${fmt(projected.high)} · L ${fmt(projected.low)} · ${signed(projected.expected_move_bps ?? projected.change_bps, 1, "bp")} · conf ${percent(projected.confidence)}`));
   return item;
+}
+
+function decisionStat(label, value, tone = "") {
+  const item = node("div", "decision-stat");
+  item.append(node("label", "", label));
+  item.append(node("strong", tone, value));
+  return item;
+}
+
+function decisionRule(label, copy, tone) {
+  const item = node("div", "decision-rule");
+  item.append(node("b", tone, label));
+  item.append(node("span", "", copy));
+  return item;
+}
+
+function evaluateDecision(leg) {
+  const market = leg.market || {};
+  const ai = signalFor(market, 1);
+  const projected = projectionFor(market, 1);
+  const policy = market.research?.ai?.policy || {};
+  const verdict = leg.verdict;
+  const candidate = ai?.action || "HOLD";
+  const cost = finite(policy.cost_bps) || 0;
+  const expectedMove = Math.abs(finite(projected?.expected_move_bps) || 0);
+  const isOption = leg.kind === "CE" || leg.kind === "PE";
+  const verdictAction = verdict?.action || null;
+  const premiumShort = isOption && verdictAction === "SHORT";
+  const verdictPass = verdict
+    ? Boolean(verdict.is_trade) && (premiumShort || (finite(verdict.edge_bps) || 0) > 0)
+    : expectedMove > cost;
+  const directionAgrees = !verdict || (
+    (candidate === "BUY" && verdictAction === "LONG")
+    || (candidate === "SELL" && verdictAction === "SHORT")
+  );
+
+  let action = candidate;
+  let reason = "The realtime learners are still warming; wait for a measured signal.";
+  if (!ai) {
+    action = "HOLD";
+  } else if (candidate === "HOLD") {
+    action = "HOLD";
+    if ((finite(ai.trust_score) || 0) < (finite(policy.min_trust_for_action) || 0)) {
+      reason = `HOLD: trust ${percent(ai.trust_score)} is below the ${percent(policy.min_trust_for_action)} action floor.`;
+    } else {
+      reason = `HOLD: P(up) ${fmt(ai.p_up, 3)} is inside the neutral ${fmt(policy.sell_probability, 2)}–${fmt(policy.buy_probability, 2)} zone.`;
+    }
+  } else if (!verdictPass) {
+    action = "HOLD";
+    reason = verdict
+      ? `HOLD: ${verdict.reason}; the projected move has no positive breakeven edge.`
+      : `HOLD: expected ${fmt(expectedMove, 1)}bp does not clear estimated ${fmt(cost, 1)}bp costs.`;
+  } else if (!directionAgrees) {
+    action = "HOLD";
+    reason = `HOLD: AI says ${candidate}, but the cost/breakeven verdict says ${verdictAction}; wait for agreement.`;
+  } else {
+    const verb = candidate === "BUY" ? "BUY" : isOption ? "SELL / EXIT" : "SELL";
+    reason = `${verb} setup: realtime AI and the cost-gated ${verdictAction || "move"} verdict agree. Re-check on every one-second update.`;
+  }
+
+  const edge = verdict
+    ? premiumShort ? null : finite(verdict.edge_bps)
+    : expectedMove - cost;
+  const invalidation = !projected
+    ? "—"
+    : action === "BUY"
+      ? `< ${fmt(projected.low)}`
+      : action === "SELL"
+        ? `> ${fmt(projected.high)}`
+        : `${fmt(projected.low)}–${fmt(projected.high)}`;
+  return {
+    action,
+    ai,
+    projected,
+    policy,
+    verdict,
+    edge,
+    edgeText: premiumShort ? "IV-RICH PASS" : signed(edge, 1, "bp"),
+    invalidation,
+    reason,
+  };
+}
+
+function renderDecisions(payload) {
+  const root = byId("decision-grid");
+  const cards = legList(payload).map((leg) => {
+    const result = evaluateDecision(leg);
+    const { ai, policy, projected, verdict } = result;
+    const actionTone = directionClass(result.action);
+    const card = node("article", `decision-card action-${result.action.toLowerCase()}`);
+    const head = node("div", "decision-head");
+    const identity = node("div");
+    identity.append(node("div", "decision-instrument", leg.strike ? `${leg.label} ${fmt(leg.strike, 0)}` : leg.label));
+    identity.append(node("div", "decision-symbol", leg.market?.symbol || "—"));
+    head.append(identity, node("div", `decision-action ${actionTone}`, result.action));
+
+    const stats = node("div", "decision-stats");
+    stats.append(
+      decisionStat("P(UP)", fmt(ai?.p_up, 3)),
+      decisionStat("TRUST", percent(ai?.trust_score)),
+      decisionStat("EDGE / GATE", result.edgeText, result.edgeText === "IV-RICH PASS" || finite(result.edge) > 0 ? "up" : "hold"),
+      decisionStat("TARGET / INVALID", `${fmt(projected?.close)} / ${result.invalidation}`),
+    );
+
+    const rules = node("div", "decision-rules");
+    const trustFloor = percent(policy.min_trust_for_action);
+    const costRule = verdict
+      ? `positive breakeven edge and a LONG verdict; current ${verdict.action}`
+      : `projected move above ${fmt(policy.cost_bps, 1)}bp costs`;
+    rules.append(
+      decisionRule("BUY WHEN", `P(up) ≥ ${fmt(policy.buy_probability, 2)}, trust ≥ ${trustFloor}, ${costRule}.`, "up"),
+      decisionRule("HOLD WHEN", `probability is neutral, trust is unproven, costs are not cleared, or AI and verdict disagree.`, "hold"),
+      decisionRule("SELL WHEN", `P(up) ≤ ${fmt(policy.sell_probability, 2)}, trust ≥ ${trustFloor}, and the cost gate confirms SHORT. For options this can mean exit/write risk.`, "down"),
+    );
+
+    card.append(head, node("div", "decision-summary", result.reason), stats, rules);
+    return card;
+  });
+  root.replaceChildren(...cards);
+  if (!cards.length) root.append(node("div", "empty", "DECISION STATE IS WARMING"));
 }
 
 function renderLegs(payload) {
@@ -237,7 +374,7 @@ function drawChart(chart, market) {
       x2: separator,
       y2: top + plotHeight,
       stroke: "#2457d6",
-      "stroke-dasharray": "4 4",
+      "stroke-opacity": 0.55,
       "vector-effect": "non-scaling-stroke",
     }));
     chart.append(svgNode("text", {
@@ -248,22 +385,8 @@ function drawChart(chart, market) {
       "font-weight": 700,
     }, "PROJECTED"));
 
-    const anchorY = y(market.last_price);
-    if (Number.isFinite(anchorY)) {
-      chart.append(svgNode("line", {
-        x1: separator,
-        y1: anchorY,
-        x2: left + plotWidth,
-        y2: anchorY,
-        stroke: "#64748b",
-        "stroke-dasharray": "2 3",
-        "stroke-opacity": 0.7,
-        "vector-effect": "non-scaling-stroke",
-      }));
-    }
   }
 
-  const projectedCloses = [];
   all.forEach((candle, index) => {
     const isProjection = index >= usableActual.length;
     const rising = Number(candle.close) >= Number(candle.open);
@@ -297,7 +420,6 @@ function drawChart(chart, market) {
       "vector-effect": "non-scaling-stroke",
     }));
     if (isProjection) {
-      projectedCloses.push(`${center},${closeY}`);
       group.append(svgNode("circle", { cx: center, cy: closeY, r: 2.2, fill: color }));
       group.append(svgNode("text", {
         x: center,
@@ -310,17 +432,6 @@ function drawChart(chart, market) {
     }
     chart.append(group);
   });
-
-  if (projectedCloses.length > 1) {
-    chart.append(svgNode("polyline", {
-      points: projectedCloses.join(" "),
-      fill: "none",
-      stroke: "#2457d6",
-      "stroke-width": 1.5,
-      "stroke-dasharray": "3 2",
-      "vector-effect": "non-scaling-stroke",
-    }));
-  }
 }
 
 function validCandle(item) {
@@ -353,8 +464,130 @@ function tag(value) {
   return node("span", `tag ${directionClass(value)}`, value || "WAIT");
 }
 
+function calculationMetric(label, value, tone = "") {
+  const item = node("div", "calculation-metric");
+  item.append(node("label", "", label), node("strong", tone, value));
+  return item;
+}
+
+function calculationSection(title, content, className = "") {
+  const section = node("section", "calculation-section");
+  section.append(node("h3", "", title));
+  if (className) section.append(node("pre", className, content));
+  else section.append(content);
+  return section;
+}
+
+function showCalculation({ kicker, title, lead, metrics, formula, details }) {
+  byId("calculation-kicker").textContent = kicker;
+  byId("calculation-title").textContent = title;
+  const content = byId("calculation-content");
+  const parts = [node("p", "calculation-lead", lead)];
+  if (metrics?.length) {
+    const metricGrid = node("div", "calculation-metrics");
+    metrics.forEach(([label, value, tone]) => metricGrid.append(calculationMetric(label, value, tone)));
+    parts.push(metricGrid);
+  }
+  if (formula) parts.push(calculationSection("FORMULA USED", formula, "calculation-formula"));
+  if (details?.length) {
+    const list = node("ul", "calculation-list");
+    details.forEach((detail) => list.append(node("li", "", detail)));
+    parts.push(calculationSection("LIVE INPUT / INTERPRETATION", list));
+  }
+  content.replaceChildren(...parts);
+  const modal = byId("calculation-modal");
+  if (!modal.open) modal.showModal();
+}
+
+function algorithmFormula(name) {
+  const formulas = {
+    online_logistic: "margin = bias + Σ(weightᵢ × causal_z(featureᵢ))\nP(up) = sigmoid(margin)\nweights ← L2-shrunk SGD update after the target bar matures",
+    passive_aggressive: "margin = bias + Σ(weightᵢ × causal_z(featureᵢ))\nP(up) = sigmoid(margin / max(1, ||weights||))\nupdate only when max(0, 1 − target × margin) > 0",
+    gaussian_nb: "log_score(class) = log(class prior) + Σ Gaussian log-likelihood(featureᵢ | class)\nP(up) = sigmoid(log_score(up) − log_score(down))",
+    ftrl_proximal: "weightᵢ = proximal(zᵢ, nᵢ, α, β, L1, L2)\nmargin = bias + Σ(weightᵢ × causal_z(featureᵢ))\nP(up) = sigmoid(margin)",
+    adaptive_knn: "distance = RMS(query_z − neighbour_z)\nweight = exp(−ln(2) × age / half_life) / max(distance, 0.05)\nP(up) = weighted neighbour outcomes with Beta prior",
+    strategy_combinations: "expert = active signed strategy singles/pairs/triples\nP(up | expert) = (decayed_up + prior/2) / (support + prior)\nP(up) = support-weighted mean of eligible experts",
+  };
+  return formulas[name] || "P(up) = online learner probability from causally available features\nparameters update only after the exact target bar closes";
+}
+
+function showAiCalculation(card, market) {
+  const oneBar = signalFor(market, 1);
+  const live = (oneBar?.algorithms || []).find((item) => item.name === card.algorithm);
+  showCalculation({
+    kicker: "REALTIME AI CALCULATION",
+    title: card.algorithm,
+    lead: "This learner predicts before the target closes, is scored at the exact target, and only then updates. The figures below are the current immutable prediction and matured scorecard.",
+    metrics: [
+      ["LIVE P(UP)", fmt(live?.p_up, 4), directionClass(live?.action)],
+      ["ACTION", live?.action || "WARMING", directionClass(live?.action)],
+      ["HIT / MISS", `${card.hits || 0} / ${card.misses || 0}`, ""],
+      ["TRUST", percent(card.trust_score), "cyan"],
+    ],
+    formula: algorithmFormula(card.algorithm),
+    details: [
+      `Accuracy ${percent(card.accuracy, 1)} from ${card.samples || 0} matured predictions; rolling accuracy ${percent(card.rolling_accuracy, 1)}.`,
+      `Net hypothetical result ${signed(card.net_pnl_bps, 1, "bp")}; maximum drawdown ${signed(card.drawdown_bps, 1, "bp")}.`,
+      "Trust is evidence-gated and combines conservative accuracy skill, Brier skill, calibration quality, and a positive post-cost result. It is not the same as probability.",
+    ],
+  });
+}
+
+function showStrategyCalculation(signal) {
+  const meta = signal.meta || {};
+  const raw = finite(meta.raw_score) || 0;
+  const threshold = finite(meta.active_threshold) || 0.15;
+  const samples = Number(meta.scored || 0);
+  const hits = Number(meta.hits || 0);
+  showCalculation({
+    kicker: `${String(meta.category || "STRATEGY").toUpperCase()} PLUGIN CALCULATION`,
+    title: signal.strategy,
+    lead: meta.description || signal.reason || "Plugin strategy evaluated on the latest causally available feature row.",
+    metrics: [
+      ["SIGNED SCORE", signed(raw, 4), raw > 0 ? "up" : raw < 0 ? "down" : "hold"],
+      ["CONFIDENCE", percent(Math.abs(raw)), "prediction"],
+      ["STATE", meta.state || "WAIT", directionClass(meta.state === "ACTIVE" ? signal.direction : "HOLD")],
+      ["TRUST", percent(meta.trust_score), "cyan"],
+    ],
+    formula: `raw_score = plugin.score(latest bars, latest indicators)\nconfidence = |raw_score| = ${Math.abs(raw).toFixed(4)}\ndirection = sign(raw_score)\nstate = ACTIVE when |raw_score| ≥ ${threshold.toFixed(2)}, otherwise WAIT\ncurrent: |${raw.toFixed(4)}| ${Math.abs(raw) >= threshold ? "≥" : "<"} ${threshold.toFixed(2)} → ${meta.state || "WAIT"}`,
+    details: [
+      signal.reason || "No live condition detail is available.",
+      samples ? `Measured outcomes: ${hits} hits / ${Math.max(samples - hits, 0)} misses; accuracy ${percent(hits / samples, 1)}; net ${signed(meta.net_pnl_bps, 1, "bp")}.` : "No exact-target outcome has matured for this strategy yet.",
+      `Trust = evidence(min(1, n/${meta.trust_min_samples || 50})) × [75% conservative accuracy skill + 25% positive post-cost quality].`,
+    ],
+  });
+}
+
+function showPredictionCalculation(leg, horizon, item, projected, stats) {
+  const members = item.algorithms || [];
+  const weights = members.map((member) => Math.max(finite(member.trust_score) || 0, 0.05));
+  const numerator = members.reduce((sum, member, index) => sum + (finite(member.p_up) || 0.5) * weights[index], 0);
+  const denominator = weights.reduce((sum, value) => sum + value, 0);
+  const policy = leg.market?.research?.ai?.policy || {};
+  const move = Math.abs(finite(projected?.expected_move_bps) || 0);
+  const cost = finite(policy.cost_bps) || 0;
+  showCalculation({
+    kicker: `${leg.label} +${horizon} CONSENSUS`,
+    title: `${item.action} · P(up) ${fmt(item.p_up, 4)}`,
+    lead: "The cell combines all online learners with a minimum 5% vote weight, applies the configured probability/trust policy, then compares the projected move with estimated round-trip cost.",
+    metrics: [
+      ["TARGET", `${timeOnly(item.target_at)} IST`, ""],
+      ["CONFIDENCE", percent(item.confidence), "prediction"],
+      ["TRUST", percent(item.trust_score), "cyan"],
+      ["MOVE − COST", signed(move - cost, 2, "bp"), move > cost ? "up" : "hold"],
+    ],
+    formula: `weightᵢ = max(learner_trustᵢ, 0.05)\nP(up) = Σ(Pᵢ × weightᵢ) / Σ(weightᵢ)\n      = ${numerator.toFixed(4)} / ${denominator.toFixed(4)} = ${denominator ? (numerator / denominator).toFixed(4) : "0.5000"}\nensemble_trust = mean(learner trust) = ${fmt(item.trust_score, 4)}\nBUY if P(up) ≥ ${fmt(policy.buy_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\nSELL if P(up) ≤ ${fmt(policy.sell_probability, 2)} and trust ≥ ${fmt(policy.min_trust_for_action, 2)}\npost_cost_edge = |${fmt(projected?.expected_move_bps, 2)}| − ${fmt(cost, 2)} = ${signed(move - cost, 2, "bp")}`,
+    details: [
+      ...members.map((member) => `${member.name}: P(up) ${fmt(member.p_up, 4)}, action ${member.action}, trust ${percent(member.trust_score)}.`),
+      projected ? `Projected OHLC: ${fmt(projected.open)} / ${fmt(projected.high)} / ${fmt(projected.low)} / ${fmt(projected.close)} at confidence ${percent(projected.confidence)}.` : "The projected candle is still warming.",
+      stats.scored ? `Projected-candle history: ${stats.hits || 0}/${stats.scored} directional hits (${percent(stats.hit_rate, 1)}), MAE ${fmt(stats.mean_abs_error_bps, 2)}bp.` : "No projected candle at this horizon has matured yet.",
+    ],
+  });
+}
+
 function renderAi(payload) {
-  const cards = spotLeg(payload)?.market?.research?.ai?.scorecards || [];
+  const market = spotLeg(payload)?.market || {};
+  const cards = market.research?.ai?.scorecards || [];
   const rows = cards.map((card) => [
     card.algorithm,
     card.samples ?? 0,
@@ -365,36 +598,102 @@ function renderAi(payload) {
     signed(card.drawdown_bps, 1, "bp"),
     percent(card.trust_score),
   ]);
-  byId("ai-scorecards").replaceChildren(table(
+  const scoreTable = table(
     ["algorithm", "n", "hit/miss", "accuracy", "rolling", "net", "drawdown", "trust"],
     rows,
     ["cyan"],
-  ));
+  );
+  if (scoreTable.tagName === "TABLE") {
+    scoreTable.querySelectorAll("tbody tr").forEach((row, index) => {
+      row.classList.add("inspectable");
+      row.title = "Open live AI calculation";
+      row.addEventListener("click", () => showAiCalculation(cards[index], market));
+    });
+  }
+  byId("ai-scorecards").replaceChildren(scoreTable);
+}
+
+function probabilityBar(value) {
+  const bar = node("span", "probability-bar");
+  const fill = node("i");
+  fill.style.width = `${Math.max(0, Math.min((finite(value) || 0.5) * 100, 100))}%`;
+  bar.append(fill);
+  return bar;
+}
+
+function predictionCell(leg, horizon) {
+  const market = leg.market || {};
+  const item = signalFor(market, horizon);
+  const projected = projectionFor(market, horizon);
+  const policy = market.research?.ai?.policy || {};
+  const stats = market.research?.horizons?.[horizon]
+    || market.research?.horizons?.[String(horizon)]
+    || {};
+  const cell = node("div", "prediction-cell");
+  if (!item) {
+    cell.append(node("div", "empty", "AI HORIZON WARMING"));
+    return cell;
+  }
+  cell.classList.add("inspectable");
+  cell.title = "Open prediction calculation";
+  cell.addEventListener("click", () => showPredictionCalculation(leg, horizon, item, projected, stats));
+
+  const head = node("div", "prediction-cell-head");
+  head.append(tag(item.action), node("time", "", `${timeOnly(item.target_at)} IST`));
+  const probability = node("div", "prediction-prob");
+  probability.append(node("span", "", "P(UP)"), probabilityBar(item.p_up), node("b", directionClass(item.action), fmt(item.p_up, 2)));
+
+  const detail = node("div", "prediction-detail");
+  detail.append(
+    node("span", "", `TRUST ${percent(item.trust_score)}`),
+    node("span", "", projected ? `C ${fmt(projected.close)} · ${signed(projected.expected_move_bps, 1, "bp")}` : "PATH —"),
+  );
+  const expected = Math.abs(finite(projected?.expected_move_bps) || 0);
+  const cost = finite(policy.cost_bps) || 0;
+  let gateText = "HOLD · AI NEUTRAL";
+  let gateTone = "hold";
+  if (item.action !== "HOLD" && !projected) {
+    gateText = "HOLD · PATH WARMING";
+  } else if (item.action !== "HOLD" && expected > cost) {
+    gateText = `POST-COST CANDIDATE · +${fmt(expected - cost, 1)}bp`;
+    gateTone = directionClass(item.action);
+  } else if (item.action !== "HOLD") {
+    gateText = `HOLD · ${fmt(expected, 1)}bp < ${fmt(cost, 1)}bp COST`;
+  }
+  if (stats.scored) gateText += ` · HIT ${percent(stats.hit_rate)}`;
+
+  cell.append(head, probability, detail, node("div", `prediction-gate ${gateTone}`, gateText));
+  return cell;
 }
 
 function renderPredictions(payload) {
-  const rows = [];
-  legList(payload).forEach((leg) => {
-    const ai = leg.market?.research?.ai?.signals || {};
-    Object.entries(ai).sort(([a], [b]) => Number(a) - Number(b)).forEach(([horizon, item]) => {
-      const members = item.algorithms || [];
-      const leader = [...members].sort((a, b) => (b.trust_score || 0) - (a.trust_score || 0))[0];
-      rows.push([
-        leg.label,
-        `+${horizon}`,
-        tag(item.action),
-        fmt(item.p_up, 3),
-        percent(item.confidence),
-        percent(item.trust_score),
-        leader ? `${leader.name} ${fmt(leader.p_up, 2)}` : "—",
-        members.length,
-      ]);
-    });
+  const root = byId("live-predictions");
+  const legs = legList(payload);
+  const horizonSet = new Set();
+  legs.forEach((leg) => {
+    Object.keys(leg.market?.research?.ai?.signals || {}).forEach((value) => horizonSet.add(Number(value)));
+    (leg.market?.projections || []).forEach((item) => horizonSet.add(Number(item.horizon)));
   });
-  byId("live-predictions").replaceChildren(table(
-    ["leg", "bar", "action", "P(up)", "confidence", "trust", "best member", "models"],
-    rows,
-  ));
+  const horizons = [...horizonSet].filter(Number.isFinite).sort((a, b) => a - b);
+  if (!horizons.length) horizons.push(1, 2, 3);
+
+  const rows = [];
+  const header = node("div", "prediction-row matrix-head");
+  header.style.setProperty("--horizons", horizons.length);
+  header.append(node("div", "prediction-leg", "INSTRUMENT"));
+  horizons.forEach((horizon) => header.append(node("div", "prediction-cell", `+${horizon} TARGET BAR`)));
+  rows.push(header);
+
+  legs.forEach((leg) => {
+    const row = node("div", "prediction-row");
+    row.style.setProperty("--horizons", horizons.length);
+    const label = node("div", "prediction-leg", leg.strike ? `${leg.label} ${fmt(leg.strike, 0)}` : leg.label);
+    label.append(node("small", "", leg.market?.symbol || "—"));
+    row.append(label);
+    horizons.forEach((horizon) => row.append(predictionCell(leg, horizon)));
+    rows.push(row);
+  });
+  root.replaceChildren(...rows);
 }
 
 function renderStrategies(payload) {
@@ -402,7 +701,35 @@ function renderStrategies(payload) {
   const spot = spotLeg(payload);
   const signals = spot?.market?.signals || [];
   const normalized = strategyQuery.trim().toLowerCase();
-  const filtered = signals.filter((signal) => !normalized || `${signal.strategy} ${signal.reason}`.toLowerCase().includes(normalized));
+  const filtered = signals.filter((signal) => !normalized || signal.strategy.toLowerCase().includes(normalized));
+  const counts = { UP: 0, DOWN: 0, HOLD: 0 };
+  signals.forEach((signal) => {
+    const active = signal.meta?.state === "ACTIVE";
+    const bucket = active && signal.direction === "UP"
+      ? "UP"
+      : active && signal.direction === "DOWN"
+        ? "DOWN"
+        : "HOLD";
+    counts[bucket] += 1;
+  });
+  const total = signals.length || 1;
+  const averageConfidence = signals.reduce((sum, signal) => sum + (finite(signal.strength) || 0), 0) / total;
+  const averageTrust = signals.reduce((sum, signal) => sum + (finite(signal.meta?.trust_score) || 0), 0) / total;
+  const netView = (counts.UP - counts.DOWN) / total;
+  const summary = [
+    ["UP", `${percent(counts.UP / total)} · ${counts.UP}/${signals.length}`, "up"],
+    ["DOWN", `${percent(counts.DOWN / total)} · ${counts.DOWN}/${signals.length}`, "down"],
+    ["HOLD", `${percent(counts.HOLD / total)} · ${counts.HOLD}/${signals.length}`, "hold"],
+    ["AVG CONFIDENCE", percent(averageConfidence), "prediction"],
+    ["AVG TRUST", percent(averageTrust), "cyan"],
+    ["NET BREADTH", signed(netView, 2), netView > 0 ? "up" : netView < 0 ? "down" : "hold"],
+  ].map(([label, value, tone]) => {
+    const item = node("div", "strategy-summary-item");
+    item.append(node("label", "", label), node("strong", tone, value));
+    return item;
+  });
+  byId("strategy-summary").replaceChildren(...summary);
+
   const rows = filtered.map((signal) => {
     const states = legs.map((leg) => {
       const match = (leg.market?.signals || []).find((candidate) => candidate.strategy === signal.strategy);
@@ -410,20 +737,47 @@ function renderStrategies(payload) {
       return state === "ACTIVE" ? tag(match.direction) : tag(state);
     });
     const meta = signal.meta || {};
-    const measured = meta.scored ? ` · H/M ${meta.hits || 0}/${Math.max((meta.scored || 0) - (meta.hits || 0), 0)} · net ${signed(meta.net_pnl_bps, 1, "bp")} · trust ${percent(meta.trust_score)}` : " · warming scorecard";
-    return [signal.strategy, ...states, `${signal.reason || "no setup"}${measured}`];
+    return [
+      signal.strategy,
+      ...states,
+      percent(signal.strength),
+      percent(meta.trust_score),
+      meta.scored ? `${meta.hits || 0}/${Math.max((meta.scored || 0) - (meta.hits || 0), 0)}` : "—",
+      meta.scored ? signed(meta.net_pnl_bps, 1, "bp") : "—",
+    ];
   });
-  const headers = ["strategy", ...legs.map((leg) => leg.label), "condition / measured result"];
-  const classes = ["cyan", ...legs.map(() => ""), "reason"];
-  byId("strategies").replaceChildren(table(headers, rows, classes));
+  const headers = ["strategy", ...legs.map((leg) => leg.label), "confidence", "trust", "hit/miss", "net"];
+  const classes = ["cyan", ...legs.map(() => "")];
+  const strategyTable = table(headers, rows, classes);
+  if (strategyTable.tagName === "TABLE") {
+    strategyTable.querySelectorAll("tbody tr").forEach((row, index) => {
+      row.classList.add("inspectable");
+      row.title = "Open strategy calculation";
+      row.addEventListener("click", () => showStrategyCalculation(filtered[index]));
+    });
+  }
+  byId("strategies").replaceChildren(strategyTable);
 }
 
-function humanIndicator(name, value) {
+function humanIndicator(name, value, price) {
   const number = finite(value);
   if (number === null) return "—";
+  if (/^ema_\d+$/.test(name)) return finite(price) >= number ? "price above EMA" : "price below EMA";
+  if (name === "vwap") return finite(price) >= number ? "price above VWAP" : "price below VWAP";
+  if (name === "supertrend") return finite(price) >= number ? "above supertrend" : "below supertrend";
+  if (name.includes("ema_") && name.includes("spread")) return number >= 0 ? "bullish EMA stack" : "bearish EMA stack";
+  if (name === "supertrend_dir") return number > 0 ? "bullish" : number < 0 ? "bearish" : "flat";
+  if (name.startsWith("roc_")) return number >= 0 ? "positive momentum" : "negative momentum";
   if (name === "rsi_14") return number >= 70 ? "overbought" : number <= 30 ? "oversold" : "neutral";
   if (name === "adx_14") return number >= 25 ? "strong trend" : "weak trend";
+  if (name === "macd_hist" || name === "ppo_hist") return number >= 0 ? "bullish momentum" : "bearish momentum";
+  if (name === "stoch_k" || name === "stoch_d") return number >= 80 ? "overbought" : number <= 20 ? "oversold" : "neutral";
+  if (name === "mfi_14") return number >= 80 ? "money flow high" : number <= 20 ? "money flow low" : "balanced flow";
+  if (name === "williams_r") return number >= -20 ? "overbought" : number <= -80 ? "oversold" : "neutral";
   if (name === "bb_pct_b") return number > 1 ? "above upper band" : number < 0 ? "below lower band" : "inside bands";
+  if (name === "choppiness_14") return number >= 61.8 ? "range-bound" : number <= 38.2 ? "trending" : "mixed";
+  if (name === "efficiency_ratio_10") return number >= 0.4 ? "directional" : "noisy";
+  if (name === "hurst_100") return number > 0.55 ? "persistent" : number < 0.45 ? "mean-reverting" : "random-like";
   if (name.includes("entropy") || name.includes("ratio") || name.includes("autocorr")) return number >= 0 ? "positive" : "negative";
   return number >= 0 ? "positive" : "negative";
 }
@@ -432,13 +786,49 @@ function indicatorLabel(name) {
   return String(name).replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function indicatorValue(name, value) {
+  const number = finite(value);
+  if (number === null) return "—";
+  if (/^(ema_\d+|supertrend|vwap)$/.test(name)) return fmt(number, 2);
+  if (name.endsWith("_dir") || name.endsWith("_cross")) return fmt(number, 0);
+  if (name.includes("_dist") || name.includes("_spread") || name.startsWith("roc_") || ["atr_norm", "macd_line", "macd_signal", "macd_hist", "cmf_20"].includes(name)) {
+    return signed(number * 100, 3, "%");
+  }
+  return fmt(number, 3);
+}
+
 function renderIndicators(payload) {
-  const indicators = spotLeg(payload)?.market?.indicators || {};
-  const items = Object.entries(indicators).map(([name, value]) => {
+  const market = spotLeg(payload)?.market || {};
+  const indicators = market.indicators || {};
+  const priority = ["ema_9", "ema_21", "ema_50", "ema_200", "vwap", "supertrend"];
+  const entries = Object.entries(indicators).sort(([left], [right]) => {
+    const leftIndex = priority.indexOf(left);
+    const rightIndex = priority.indexOf(right);
+    if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? priority.length : leftIndex) - (rightIndex < 0 ? priority.length : rightIndex);
+    return left.localeCompare(right);
+  });
+  const items = entries.map(([name, value]) => {
     const item = node("div", "indicator");
+    item.title = "Open indicator calculation";
     item.append(node("label", "", indicatorLabel(name)));
-    item.append(node("strong", finite(value) >= 0 ? "up" : "down", fmt(value, 4)));
-    item.append(node("small", "muted", humanIndicator(name, value)));
+    item.append(node("strong", finite(value) >= 0 ? "up" : "down", indicatorValue(name, value)));
+    item.append(node("small", "muted", humanIndicator(name, value, market.last_price)));
+    item.addEventListener("click", () => showCalculation({
+      kicker: "LATEST CLOSED-BAR INDICATOR",
+      title: indicatorLabel(name),
+      lead: "This causal indicator is computed from bars available at the latest close and is supplied to the strategy plugins and online learners.",
+      metrics: [
+        ["VALUE", indicatorValue(name, value), finite(value) >= 0 ? "up" : "down"],
+        ["READ", humanIndicator(name, value, market.last_price), "cyan"],
+        ["LAST PRICE", fmt(market.last_price), ""],
+        ["BAR TIME", timeOnly(market.ts), ""],
+      ],
+      formula: `${indicatorLabel(name)} = technical_pipeline(latest closed OHLCV history)\ncurrent raw value = ${fmt(value, 8)}\ndisplay value = ${indicatorValue(name, value)}`,
+      details: [
+        "No future bar or target outcome is used in this value.",
+        `Current interpretation: ${humanIndicator(name, value, market.last_price)}.`,
+      ],
+    }));
     return item;
   });
   byId("indicators").replaceChildren(...items);
@@ -495,6 +885,7 @@ function renderSystem(payload) {
 function render(payload) {
   latest = payload;
   renderOverview(payload);
+  renderDecisions(payload);
   renderLegs(payload);
   renderAi(payload);
   renderPredictions(payload);
@@ -532,6 +923,11 @@ async function poll() {
 byId("strategy-filter").addEventListener("input", (event) => {
   strategyQuery = event.target.value;
   if (latest) renderStrategies(latest);
+});
+
+byId("calculation-close").addEventListener("click", () => byId("calculation-modal").close());
+byId("calculation-modal").addEventListener("click", (event) => {
+  if (event.target === byId("calculation-modal")) byId("calculation-modal").close();
 });
 
 function redrawCharts() {
