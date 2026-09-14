@@ -111,6 +111,10 @@ main { width: min(1920px, 100%); margin: 0 auto; padding: 18px clamp(10px, 1.7vw
 
 .split-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin-bottom: 8px; }
 .split-grid.wide-left { grid-template-columns: minmax(0, 1.6fr) minmax(300px, .8fr); }
+.split-grid.wide-left > .terminal-card { display: flex; flex-direction: column; height: 620px; }
+.split-grid.wide-left .table-scroll.tall,
+.split-grid.wide-left .indicator-grid { flex: 1; min-height: 0; max-height: none; overflow-y: auto; scrollbar-color: var(--line-hot) var(--panel); }
+.split-grid.wide-left .indicator-grid { align-content: start; }
 .terminal-card { min-width: 0; overflow: hidden; }
 .card-title { min-height: 47px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .with-control { align-items: center; }

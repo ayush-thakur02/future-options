@@ -75,6 +75,9 @@ def test_web_page_is_a_self_contained_terminal_dashboard() -> None:
     assert css.status_code == 200
     assert b"--bg: #ffffff" in css.data
     assert b"monospace" in css.data
+    assert b".split-grid.wide-left > .terminal-card" in css.data
+    assert b".split-grid.wide-left .indicator-grid" in css.data
+    assert b"overflow-y: auto" in css.data
 
     script = client.get("/static/dashboard.js")
     assert script.status_code == 200
