@@ -428,6 +428,7 @@ def test_leg_panels_are_marked_blue_when_a_path_is_drawn(board) -> None:
 def test_default_board_makes_auto_learning_visible(board) -> None:
     rendered = "\n".join(render_board(board, 140, 44))
     assert "REALTIME AUTO-AI" in rendered
+    assert "hit/miss" in rendered
     assert "auto-updates each bar" in rendered or "no batch training" in rendered
     assert "AI warming" in rendered
 

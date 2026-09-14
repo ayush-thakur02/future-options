@@ -113,7 +113,7 @@ def leg_panel(leg: LegSnapshot, width: int, height: int, timeframe: str) -> Pane
                 f" AI +1 {one_bar.get('action', 'HOLD')} P↑{one_bar.get('p_up', 0.5):.2f} "
                 f"T{one_bar.get('trust_score', 0):.0%} · "
                 f"best {leader.get('algorithm', 'warming')} "
-                f"{leader.get('wins', 0)}/{leader.get('losses', 0)}",
+                f"H/M {leader.get('hits', 0)}/{leader.get('misses', 0)}",
                 style="bright_cyan",
             )
         )
@@ -286,7 +286,7 @@ def strategy_matrix(
 def ai_scores(board: BoardSnapshot) -> Panel:
     """Realtime index learners with explicit success/failure and live leg views."""
     table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
-    for name in ("algorithm", "n", "W/L", "acc", "net bp", "trust"):
+    for name in ("algorithm", "n", "hit/miss", "acc", "net bp", "trust"):
         table.add_column(name, justify="left" if name == "algorithm" else "right")
     signal_lines = []
     spot = board.spot_leg
@@ -295,7 +295,7 @@ def ai_scores(board: BoardSnapshot) -> Panel:
         table.add_row(
             card["algorithm"],
             str(card["samples"]),
-            f"{card.get('wins', 0)}/{card.get('losses', 0)}",
+            f"{card.get('hits', 0)}/{card.get('misses', 0)}",
             f"{card['accuracy']:.1%}" if card["samples"] else "—",
             f"{card['net_pnl_bps']:+.1f}",
             f"{card['trust_score']:.0%}",
@@ -314,7 +314,7 @@ def ai_scores(board: BoardSnapshot) -> Panel:
         style="grey62",
     )
     footer.append(
-        "\nW/L = matured success/failure · auto-updates each bar · no batch training",
+        "\nhit/miss = matured prediction result · auto-updates each bar · no batch training",
         style="bright_cyan",
     )
     return Panel(

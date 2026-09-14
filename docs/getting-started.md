@@ -100,7 +100,7 @@ The board shows three charts — the index, the at-the-money call and the
 at-the-money put — each with the next three candles projected in **blue** after
 the last printed one. Green and red are printed bars; blue is never a printed bar.
 
-The default panel shows realtime auto-AI predictions and matured W/L scorecards
+The default panel shows realtime auto-AI predictions and matured hit/miss scorecards
 for each instrument/horizon. Press `2` for the premium-scalping cost calculation,
 `3` for indicators, `4` for AI, `5` for prediction graphs, `j`/`k` to scroll
 strategies, or `1` to return to research. `q` exits. Historical warm-up

@@ -171,9 +171,12 @@ class AlgorithmScorecard:
     trust_score: float
 
     def as_row(self) -> dict[str, Any]:
+        hits = int(round(self.all_time.accuracy * self.all_time.sample_count))
         return {
             "algorithm": self.algorithm,
             "samples": self.all_time.sample_count,
+            "hits": hits,
+            "misses": self.all_time.sample_count - hits,
             "accuracy": round(self.all_time.accuracy, 4),
             "rolling_accuracy": round(self.rolling.accuracy, 4),
             "brier": round(self.all_time.brier_score, 4),

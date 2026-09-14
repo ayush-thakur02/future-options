@@ -275,6 +275,25 @@ def test_scorecard_reports_calibration_profit_loss_and_conservative_trust() -> N
     assert 0.0 < conservative_trust(summary, min_samples=50) < 1.0
 
 
+def test_scorecard_row_exposes_prediction_hits_and_misses(tmp_path) -> None:
+    lab = OnlineResearchLab(
+        tmp_path / "online.sqlite3",
+        algorithms=("online_logistic",),
+    )
+    for index, price in enumerate((101.0, 99.0)):
+        issued = NOW + timedelta(minutes=index * 2)
+        lab.issue(
+            {"state": 1.0},
+            timestamp=issued,
+            anchor_price=100.0,
+            horizon_min=1,
+            instrument="TEST",
+        )
+        lab.observe(timestamp=issued + timedelta(minutes=1), price=price, instrument="TEST")
+    row = lab.scorecards()[0].as_row()
+    assert row["hits"] + row["misses"] == row["samples"] == 2
+
+
 def test_online_logistic_changes_only_after_repeated_matured_outcomes(tmp_path) -> None:
     lab = OnlineResearchLab(
         tmp_path / "online.sqlite3",

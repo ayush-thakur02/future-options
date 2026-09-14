@@ -80,7 +80,7 @@ return and trust when outcomes exist. Use `j` and `k` to move through its rows.
 The right panel changes with the numbered views:
 
 The realtime AI scorecard (`4`) is the default. It shows the index learners'
-matured W/L counts, accuracy, net result and trust while every chart carries its
+matured hit/miss counts, accuracy, net result and trust while every chart carries its
 current one-bar action and probability.
 
 | Key | View |
