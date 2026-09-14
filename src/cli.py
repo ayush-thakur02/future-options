@@ -353,8 +353,8 @@ def dashboard(
         config=SessionConfig(
             offline=offline,
             timeframe=timeframe,
-            refresh=refresh,
-            nowcast_interval=nowcast,
+            refresh=min(refresh, 1.0) if web else refresh,
+            nowcast_interval=min(nowcast, 1.0) if web else nowcast,
             speed=speed,
             legs=legs,
         ),

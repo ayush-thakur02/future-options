@@ -109,7 +109,7 @@ strategies, or `1` to return to research. `q` exits. Historical warm-up
 samples are shown separately from live wins and misses. See
 [Live research](live-research.md) for the scoring and learning definitions.
 
-With `--web`, all of these views appear together in a responsive black monospace
+With `--web`, all of these views appear together in a responsive white monospace
 browser terminal. The printed local URL stays live until you press `Ctrl+C` in
 the command terminal. Use `--no-open-browser` when running headlessly.
 

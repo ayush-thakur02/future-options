@@ -42,7 +42,9 @@ class WebRenderer:
             raise ValueError("web port must be between 1 and 65535")
         self.host = host.strip()
         self.port = int(port)
-        self.refresh_ms = max(int(refresh_ms), 100)
+        # A live market view should never become more than one second stale in
+        # the browser. Faster polling remains configurable for local use.
+        self.refresh_ms = min(max(int(refresh_ms), 100), 1000)
         self.open_browser = bool(open_browser)
         self.max_candles = max(int(max_candles), 20)
         self.view = "ai"

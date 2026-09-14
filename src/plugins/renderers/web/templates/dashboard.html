@@ -3,28 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <title>NIFTY PULSE // realtime terminal</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
-  <header class="topbar">
-    <div class="brand">
-      <span class="prompt">&gt;_</span>
-      <div>
-        <h1>NIFTY PULSE</h1>
-        <p>REALTIME MARKET RESEARCH TERMINAL</p>
-      </div>
-    </div>
-    <div class="connection">
-      <span id="connection-dot" class="dot waiting"></span>
-      <span id="connection-text">CONNECTING</span>
-      <span class="divider">//</span>
-      <span id="clock">--:--:--</span>
-    </div>
-  </header>
-
   <main>
     <section id="overview" class="metric-grid" aria-label="Market overview"></section>
 
@@ -97,6 +81,12 @@
   <footer>
     <span>NIFTY PULSE // LOCAL READ-ONLY DASHBOARD</span>
     <span id="last-update">AWAITING FIRST SNAPSHOT</span>
+    <span class="connection">
+      <span id="connection-dot" class="dot waiting"></span>
+      <span id="connection-text">CONNECTING</span>
+      <span class="divider">//</span>
+      <span id="clock">--:--:--</span>
+    </span>
   </footer>
 
   <div id="loading" class="loading-panel">

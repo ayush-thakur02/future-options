@@ -3,12 +3,21 @@
 const refreshMs = Math.max(Number(document.documentElement.dataset.refreshMs) || 1000, 250);
 const byId = (id) => document.getElementById(id);
 const charts = new Map();
+const SVG_NS = "http://www.w3.org/2000/svg";
 let latest = null;
 let strategyQuery = "";
+let resizeFrame = null;
 
 function node(tag, className = "", value = "") {
   const item = document.createElement(tag);
   if (className) item.className = className;
+  if (value !== "") item.textContent = String(value);
+  return item;
+}
+
+function svgNode(tag, attributes = {}, value = "") {
+  const item = document.createElementNS(SVG_NS, tag);
+  Object.entries(attributes).forEach(([name, content]) => item.setAttribute(name, String(content)));
   if (value !== "") item.textContent = String(value);
   return item;
 }
@@ -113,6 +122,7 @@ function projectionItem(projected) {
 
 function renderLegs(payload) {
   const root = byId("leg-grid");
+  if (chartObserver) chartObserver.disconnect();
   charts.clear();
   const cards = legList(payload).map((leg, index) => {
     const market = leg.market || {};
@@ -128,9 +138,13 @@ function renderLegs(payload) {
     head.append(identity, quote);
 
     const wrap = node("div", "chart-wrap");
-    const canvas = node("canvas", "market-chart");
-    canvas.setAttribute("aria-label", `${leg.label} actual and projected candlestick chart`);
-    wrap.append(canvas);
+    const chart = svgNode("svg", {
+      class: "market-chart",
+      role: "img",
+      "aria-label": `${leg.label} actual and projected candlestick chart`,
+      preserveAspectRatio: "none",
+    });
+    wrap.append(chart);
 
     const reads = node("div", "leg-readouts");
     reads.append(readout("AUTO-AI +1", ai ? `${ai.action} · P↑ ${fmt(ai.p_up, 2)}` : "WARMING", ai ? directionClass(ai.action) : "muted"));
@@ -148,8 +162,9 @@ function renderLegs(payload) {
     else strip.append(node("div", "empty", "WAITING FOR CURRENT-BAR PROJECTION"));
 
     card.append(head, wrap, reads, strip);
-    charts.set(canvas, market);
-    window.requestAnimationFrame(() => drawChart(canvas, market));
+    charts.set(chart, market);
+    if (chartObserver) chartObserver.observe(chart);
+    window.requestAnimationFrame(() => drawChart(chart, market));
     card.style.setProperty("--leg-index", index);
     return card;
   });
@@ -157,24 +172,17 @@ function renderLegs(payload) {
   if (!cards.length) root.append(node("div", "empty", "NO INSTRUMENT SNAPSHOT YET"));
 }
 
-function drawChart(canvas, market) {
-  const width = Math.max(canvas.clientWidth, 240);
-  const height = Math.max(canvas.clientHeight, 180);
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
-  const ctx = canvas.getContext("2d");
-  ctx.scale(ratio, ratio);
-  ctx.clearRect(0, 0, width, height);
-
+function drawChart(chart, market) {
+  const width = Math.max(Math.round(chart.clientWidth), 240);
+  const height = Math.max(Math.round(chart.clientHeight), 180);
+  chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  chart.replaceChildren();
   const actual = (market.candles || []).filter(validCandle);
   const projected = (market.projections || []).filter(validCandle);
   const usableActual = actual.slice(-Math.max(Math.floor(width / 7) - projected.length, 24));
   const all = [...usableActual, ...projected];
   if (!all.length) {
-    ctx.fillStyle = "#718078";
-    ctx.font = "10px monospace";
-    ctx.fillText("AWAITING CANDLES", 14, 28);
+    chart.append(svgNode("text", { x: 14, y: 28, fill: "#64748b", "font-size": 10 }, "AWAITING CANDLES"));
     return;
   }
 
@@ -194,56 +202,125 @@ function drawChart(canvas, market) {
   const step = plotWidth / Math.max(all.length, 1);
   const bodyWidth = Math.max(Math.min(step * 0.62, 8), 2);
 
-  ctx.font = "9px monospace";
-  ctx.lineWidth = 1;
   for (let line = 0; line <= 4; line += 1) {
     const lineY = top + (plotHeight * line) / 4;
     const price = high - (range * line) / 4;
-    ctx.strokeStyle = "#142018";
-    ctx.beginPath();
-    ctx.moveTo(left, lineY + 0.5);
-    ctx.lineTo(left + plotWidth, lineY + 0.5);
-    ctx.stroke();
-    ctx.fillStyle = "#718078";
-    ctx.fillText(price.toLocaleString("en-IN", { maximumFractionDigits: 2 }), left + plotWidth + 5, lineY + 3);
+    chart.append(svgNode("line", {
+      x1: left,
+      y1: lineY,
+      x2: left + plotWidth,
+      y2: lineY,
+      stroke: "#e2e8f0",
+      "vector-effect": "non-scaling-stroke",
+    }));
+    chart.append(svgNode("text", {
+      x: left + plotWidth + 5,
+      y: lineY + 3,
+      fill: "#64748b",
+      "font-size": 9,
+    }, price.toLocaleString("en-IN", { maximumFractionDigits: 2 })));
   }
 
   if (projected.length && usableActual.length) {
     const separator = left + usableActual.length * step;
-    ctx.setLineDash([3, 4]);
-    ctx.strokeStyle = "#5588ff";
-    ctx.beginPath();
-    ctx.moveTo(separator, top);
-    ctx.lineTo(separator, top + plotHeight);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#7698ff";
-    ctx.fillText("FWD", Math.min(separator + 4, width - right - 24), top + 10);
+    chart.append(svgNode("rect", {
+      x: separator,
+      y: top,
+      width: Math.max(left + plotWidth - separator, 0),
+      height: plotHeight,
+      fill: "#2457d6",
+      "fill-opacity": 0.045,
+    }));
+    chart.append(svgNode("line", {
+      x1: separator,
+      y1: top,
+      x2: separator,
+      y2: top + plotHeight,
+      stroke: "#2457d6",
+      "stroke-dasharray": "4 4",
+      "vector-effect": "non-scaling-stroke",
+    }));
+    chart.append(svgNode("text", {
+      x: Math.min(separator + 4, width - right - 24),
+      y: top + 10,
+      fill: "#1d4ed8",
+      "font-size": 9,
+      "font-weight": 700,
+    }, "PROJECTED"));
+
+    const anchorY = y(market.last_price);
+    if (Number.isFinite(anchorY)) {
+      chart.append(svgNode("line", {
+        x1: separator,
+        y1: anchorY,
+        x2: left + plotWidth,
+        y2: anchorY,
+        stroke: "#64748b",
+        "stroke-dasharray": "2 3",
+        "stroke-opacity": 0.7,
+        "vector-effect": "non-scaling-stroke",
+      }));
+    }
   }
 
+  const projectedCloses = [];
   all.forEach((candle, index) => {
     const isProjection = index >= usableActual.length;
     const rising = Number(candle.close) >= Number(candle.open);
-    const color = isProjection ? "#5588ff" : rising ? "#44ff88" : "#ff5263";
+    const color = isProjection ? "#2457d6" : rising ? "#087a4f" : "#c4324a";
     const center = left + (index + 0.5) * step;
     const openY = y(candle.open);
     const closeY = y(candle.close);
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.globalAlpha = isProjection ? Math.max(0.45, 1 - (index - usableActual.length) * 0.15) : 0.88;
-    ctx.beginPath();
-    ctx.moveTo(center, y(candle.high));
-    ctx.lineTo(center, y(candle.low));
-    ctx.stroke();
+    const opacity = isProjection ? Math.max(0.5, 1 - (index - usableActual.length) * 0.14) : 0.9;
+    const group = svgNode("g", { opacity });
+    const title = svgNode("title", {}, `${isProjection ? `PROJECTED +${candle.horizon}` : "PRINTED"} · O ${fmt(candle.open)} · H ${fmt(candle.high)} · L ${fmt(candle.low)} · C ${fmt(candle.close)}${isProjection ? ` · confidence ${percent(candle.confidence)}` : ""}`);
+    group.append(title);
+    group.append(svgNode("line", {
+      x1: center,
+      y1: y(candle.high),
+      x2: center,
+      y2: y(candle.low),
+      stroke: color,
+      "stroke-width": isProjection ? 1.6 : 1,
+      "vector-effect": "non-scaling-stroke",
+    }));
     const bodyTop = Math.min(openY, closeY);
     const bodyHeight = Math.max(Math.abs(closeY - openY), 1);
-    if (rising && !isProjection) {
-      ctx.strokeRect(center - bodyWidth / 2, bodyTop, bodyWidth, bodyHeight);
-    } else {
-      ctx.fillRect(center - bodyWidth / 2, bodyTop, bodyWidth, bodyHeight);
+    group.append(svgNode("rect", {
+      x: center - bodyWidth / 2,
+      y: bodyTop,
+      width: bodyWidth,
+      height: bodyHeight,
+      fill: rising || isProjection ? "#ffffff" : color,
+      stroke: color,
+      "stroke-width": isProjection ? 1.8 : 1,
+      "vector-effect": "non-scaling-stroke",
+    }));
+    if (isProjection) {
+      projectedCloses.push(`${center},${closeY}`);
+      group.append(svgNode("circle", { cx: center, cy: closeY, r: 2.2, fill: color }));
+      group.append(svgNode("text", {
+        x: center,
+        y: top + plotHeight + 13,
+        fill: color,
+        "font-size": 9,
+        "font-weight": 700,
+        "text-anchor": "middle",
+      }, `+${candle.horizon}`));
     }
+    chart.append(group);
   });
-  ctx.globalAlpha = 1;
+
+  if (projectedCloses.length > 1) {
+    chart.append(svgNode("polyline", {
+      points: projectedCloses.join(" "),
+      fill: "none",
+      stroke: "#2457d6",
+      "stroke-width": 1.5,
+      "stroke-dasharray": "3 2",
+      "vector-effect": "non-scaling-stroke",
+    }));
+  }
 }
 
 function validCandle(item) {
@@ -457,9 +534,20 @@ byId("strategy-filter").addEventListener("input", (event) => {
   if (latest) renderStrategies(latest);
 });
 
-window.addEventListener("resize", () => {
-  charts.forEach((market, canvas) => drawChart(canvas, market));
-});
+function redrawCharts() {
+  if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+  resizeFrame = window.requestAnimationFrame(() => {
+    charts.forEach((market, chart) => drawChart(chart, market));
+    resizeFrame = null;
+  });
+}
+
+const chartObserver = typeof ResizeObserver === "undefined"
+  ? null
+  : new ResizeObserver(redrawCharts);
+
+window.addEventListener("resize", redrawCharts);
+if (window.visualViewport) window.visualViewport.addEventListener("resize", redrawCharts);
 
 window.setInterval(() => {
   byId("clock").textContent = new Date().toLocaleTimeString("en-IN", { hour12: false, timeZone: "Asia/Kolkata" }) + " IST";

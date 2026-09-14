@@ -64,18 +64,27 @@ def test_web_page_is_a_self_contained_terminal_dashboard() -> None:
     assert page.status_code == 200
     assert b"NIFTY PULSE" in page.data
     assert b"REALTIME AUTO-AI" in page.data
+    assert b'class="topbar"' not in page.data
     assert b"dashboard.css" in page.data
     assert b"dashboard.js" in page.data
 
     css = client.get("/static/dashboard.css")
     assert css.status_code == 200
-    assert b"--bg: #030504" in css.data
+    assert b"--bg: #ffffff" in css.data
     assert b"monospace" in css.data
 
     script = client.get("/static/dashboard.js")
     assert script.status_code == 200
     assert b'/api/snapshot' in script.data
     assert b"drawChart" in script.data
+    assert b"createElementNS" in script.data
+    assert b"ResizeObserver" in script.data
+
+
+def test_web_polling_is_never_slower_than_one_second() -> None:
+    renderer = WebRenderer(open_browser=False, refresh_ms=5_000)
+
+    assert renderer.refresh_ms == 1_000
 
 
 def test_dashboard_command_advertises_web_server_controls() -> None:

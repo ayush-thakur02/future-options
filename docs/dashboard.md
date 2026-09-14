@@ -24,10 +24,10 @@ of the market session. Press `Ctrl+C` in that terminal to stop the feed and web
 server. Use `--no-open-browser` on a headless machine and open the printed URL
 yourself.
 
-The browser is a black, responsive, monospace research terminal. It polls the
+The browser is a white, responsive, monospace research terminal. It polls the
 local snapshot API and shows:
 
-- native canvas candlestick graphs for index, call, and put, with blue projected
+- zoom-sharp SVG candlestick graphs for index, call, and put, with blue projected
   candles on the same price scale as printed candles;
 - current per-leg AI action, probability, confidence, trust, Greeks, verdict,
   projection path, and price movement;
@@ -46,6 +46,10 @@ niftypulse dashboard --web --web-host 0.0.0.0 --web-port 8080 --no-open-browser
 Only do that on a trusted network; Flask adds no authentication to this local
 research view. The bind defaults and candle history limit live in
 `config/plugins/renderer/web.yaml`.
+
+Web snapshots and projected paths refresh at least once per second. Setting a
+faster `--refresh` or `--nowcast` cadence is supported; slower values are capped
+at one second in web mode so the browser does not silently show stale state.
 
 ---
 
