@@ -121,8 +121,12 @@ class StrategyCatalog:
         which is what makes the default weight map usable offline where the ML
         pack has no trained artifacts.
         """
-        weights = DEFAULT_WEIGHTS if weights is None else weights
         available = {strategy.name: strategy for strategy in self.all()}
+        if weights is None:
+            weights = {
+                name: DEFAULT_WEIGHTS.get(name, strategy.default_weight)
+                for name, strategy in available.items()
+            }
         composite = CompositeStrategy()
         for name, weight in weights.items():
             strategy = available.get(name)

@@ -44,17 +44,30 @@ def catalog() -> StrategyCatalog:
 
 
 def test_catalog_finds_every_rule_pack(catalog: StrategyCatalog) -> None:
-    assert {pack.name for pack in catalog.packs} == {
+    assert {
         "trend",
         "momentum",
         "reversion",
         "volatility",
-    }
+        "channels",
+        "flow",
+        "regime",
+        "statistical_anchor",
+    } <= {pack.name for pack in catalog.packs}
 
 
 def test_catalog_offers_every_rule(catalog: StrategyCatalog) -> None:
-    assert len(catalog) == 19
-    assert {"ema_trend", "rsi_reversion", "order_flow", "roc_momentum"} <= set(catalog.names())
+    assert len(catalog) >= 30
+    assert {
+        "ema_trend",
+        "rsi_reversion",
+        "order_flow",
+        "roc_momentum",
+        "regression_channel_breakout",
+        "chaikin_flow_trend",
+        "hurst_adaptive",
+        "anchor_spread_reversion",
+    } <= set(catalog.names())
 
 
 def test_roc_momentum_is_reachable(catalog: StrategyCatalog) -> None:
@@ -96,8 +109,8 @@ def test_catalog_reports_its_packs(catalog: StrategyCatalog) -> None:
 def test_ensemble_uses_every_available_weighted_strategy(catalog: StrategyCatalog) -> None:
     ensemble = catalog.ensemble()
     names = {strategy.name for strategy, _ in ensemble.components}
-    assert names == set(DEFAULT_WEIGHTS) & set(catalog.names())
-    assert len(names) == 19
+    assert names == set(catalog.names())
+    assert len(names) == len(catalog)
 
 
 def test_ensemble_skips_weights_for_absent_strategies(catalog: StrategyCatalog) -> None:

@@ -40,6 +40,9 @@ class Strategy(ABC):
     name: ClassVar[str] = "strategy"
     category: ClassVar[str] = "general"
     description: ClassVar[str] = ""
+    # Newly installed strategy plugins participate in the ensemble without a
+    # central registry edit. Individual rules may override this prior.
+    default_weight: ClassVar[float] = 0.5
 
     @abstractmethod
     def score(self, context: StrategyContext) -> pd.Series:
