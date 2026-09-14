@@ -343,10 +343,12 @@ DEFAULT_WEIGHTS = {
 }
 ```
 
-These encode a prior and are meant to be replaced by measured weights after a
-backtest run. A newly discovered strategy joins at its class-level
-`default_weight` (0.5 unless the plugin declares another value), so adding a pack
-does not require changing this central map.
+These encode fallback priors. Each bundled pack overrides them from its
+`config/plugins/strategy/<pack>.yaml` file, keeping ownership with the plugin.
+Set a configured weight to `0` to leave the strategy directly available while
+excluding it from the default ensemble. A newly discovered strategy falls back
+to its class-level `default_weight` (0.5 unless the plugin declares another
+value), so adding a pack does not require changing the central map.
 
 Weights naming a strategy this build does not have are dropped silently, which is
 what makes the default map usable offline where the model pack has no artifacts.

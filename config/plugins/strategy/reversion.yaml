@@ -1,0 +1,16 @@
+weights:
+  rsi_reversion: 0.7
+  bollinger_reversion: 0.7
+  vwap_reversion: 0.6
+  zscore_reversion: 0.5
+  range_fade: 0.4
+
+parameters:
+  rsi_reversion:
+    low: 30.0
+    high: 70.0
+  vwap_reversion:
+    # Fractional distance from VWAP (0.0015 = 15 basis points).
+    threshold: 0.0015
+  zscore_reversion:
+    entry_z: 2.0

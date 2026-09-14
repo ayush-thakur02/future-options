@@ -1,10 +1,12 @@
 # Configuration
 
-All settings live in `config/default.yaml`. Every one has a working default, so
-you only need to edit what you want to change.
+Platform-wide settings live in `config/default.yaml`. Each plugin has a separate
+file at `config/plugins/<kind>/<name>.yaml`, mirroring its handle and keeping its
+tuning next to related plugin configuration. Every setting has a working default,
+so you only need to edit what you want to change.
 
-Environment variables override credential fields. Anything a plugin declares under
-`plugins:` is merged into that plugin's parameters.
+Environment variables override credential fields. Each plugin YAML mapping is
+merged into that plugin's build parameters.
 
 ---
 
@@ -125,33 +127,46 @@ it for one run.
 
 ## `plugins`
 
-Per-plugin parameters, keyed by handle. This is what makes a plugin tunable
-without editing code:
+Per-plugin parameters are nested by plugin kind. The first directory becomes the
+kind and the filename becomes the name, so
+`config/plugins/forecast/projection.yaml` configures
+`forecast:projection`. This is what makes a plugin tunable without editing code:
 
 ```yaml
-plugins:
-  forecast:projection:
-    bars_ahead: 5
-  source:simulated:
-    seed: 17
-    days: 30
-  advisory:breakeven_gate:
-    cost_rate: 0.015
-    horizon_bars: 3
-  forecast:online_research:
-    rolling_window: 100
-    min_trust_samples: 50
-    buy_probability: 0.56
-    sell_probability: 0.44
-  advisory:performance_ledger:
-    min_trust_samples: 50
-  source:upstox:
-    feed_mode: full
+# config/plugins/forecast/projection.yaml
+bars_ahead: 5
 ```
 
-Everything here is merged into the kwargs the plugin's `build` receives, and the
-`params` block in a plugin's manifest is applied underneath it. Run
-`niftypulse plugins` to see which handles exist. See [Plugins](plugins.md).
+Every mapping is merged into the kwargs the plugin's `build` receives, and the
+`params` block in a plugin's manifest is applied underneath it. Run `niftypulse
+plugins` to see which handles exist. See [Plugins](plugins.md).
+
+Strategy packs use two common sections:
+
+```yaml
+# config/plugins/strategy/momentum.yaml
+weights:
+  macd_momentum: 0.8
+  stochastic: 0.4       # 0 excludes it from the default ensemble
+parameters:
+  stochastic:
+    oversold: 20.0
+    overbought: 80.0
+    hold_bars: 5
+```
+
+Weights control the default ensemble without removing direct access to a
+strategy. Parameters are passed to that rule's constructor. Unknown strategy
+names, non-mapping parameter blocks, and non-finite weights fail at startup
+instead of being silently ignored.
+
+Folders may be nested more deeply for organization. The first folder is still
+the kind and the filename is still the plugin name. Both `.yaml` and `.yml` are
+accepted. Defining two files that resolve to the same handle is rejected.
+
+The old `plugins:` block in `default.yaml` remains supported for compatibility.
+Its values override the separate file, but new settings should go in the plugin
+tree.
 
 | Handle | Parameter | Default | Meaning |
 |---|---|---|---|
@@ -194,9 +209,10 @@ expired.
 For a plugin parameter, highest first:
 
 1. An explicit argument (`kernel.build("forecast:projection", bars_ahead=5)`)
-2. `plugins:` in `config/default.yaml`
-3. The `params` block in the plugin's `MANIFEST`
-4. The default in the `build` signature
+2. The legacy `plugins:` override in `config/default.yaml`
+3. `config/plugins/<kind>/<name>.yaml`
+4. The `params` block in the plugin's `MANIFEST`
+5. The default in the `build` signature
 
 For credentials: environment → `.env` → stored token.
 

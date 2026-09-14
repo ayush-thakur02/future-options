@@ -1,0 +1,11 @@
+weights:
+  anchor_spread_reversion: 0.5
+  relative_strength_rotation: 0.5
+
+parameters:
+  anchor_spread_reversion:
+    window: 80
+    entry_z: 1.5
+  relative_strength_rotation:
+    beta_window: 60
+    momentum_window: 20

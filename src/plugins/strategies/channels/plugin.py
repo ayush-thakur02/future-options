@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from kernel import PluginContext, PluginKind, PluginManifest
 
-from ..base import StrategyPack
+from ..base import StrategyPack, make_strategy_pack
 from .rules import STRATEGIES
 
 MANIFEST = PluginManifest(
@@ -20,10 +20,12 @@ MANIFEST = PluginManifest(
 )
 
 
-def build(ctx: PluginContext, **params) -> StrategyPack:
-    return StrategyPack(
+def build(ctx: PluginContext, parameters=None, weights=None, **params) -> StrategyPack:
+    return make_strategy_pack(
         name="channels",
         category="channels",
         description=MANIFEST.description,
-        instances=tuple(cls() for cls in STRATEGIES),
+        strategy_types=STRATEGIES,
+        parameters=parameters,
+        weights=weights,
     )

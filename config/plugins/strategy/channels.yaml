@@ -1,0 +1,14 @@
+# Ensemble priors. Set a weight to 0 to keep the rule available but exclude it
+# from the default ensemble.
+weights:
+  keltner_continuation: 0.5
+  regression_channel_breakout: 0.5
+  channel_pressure: 0.5
+
+# Constructor parameters, keyed by strategy name.
+parameters:
+  regression_channel_breakout:
+    window: 30
+    entry_z: 1.35
+  channel_pressure:
+    persistence: 8

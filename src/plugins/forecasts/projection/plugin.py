@@ -1,8 +1,8 @@
 """The projection pack as a plugin.
 
 ``bars_ahead`` defaults to three — the next three candles — and is tunable from
-``plugins: {"forecast:projection": {bars_ahead: 5}}`` in ``config/default.yaml``
-without touching code, which is the point of declaring it in the manifest.
+``config/plugins/forecast/projection.yaml`` without touching code, which is the
+point of declaring it in the manifest.
 """
 
 from __future__ import annotations

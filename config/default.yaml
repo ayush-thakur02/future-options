@@ -1,5 +1,6 @@
 # NIFTY Pulse configuration — tuned for scalping.
 # Every value here has a working default; edit only what you need.
+# Plugin settings live separately in config/plugins/<kind>/<name>.yaml.
 
 data:
   # Upstox instrument key. Index keys use the NSE_INDEX| prefix.

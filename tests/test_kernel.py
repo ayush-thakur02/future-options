@@ -257,6 +257,27 @@ def test_kernel_merges_configured_params() -> None:
     assert kernel.build("forecast:projection") == {"bars_ahead": 3}
 
 
+def test_explicit_params_override_only_matching_configured_values() -> None:
+    settings = Settings(
+        plugin_config={
+            "forecast:projection": {"bars_ahead": 3, "refresh_on_close": True}
+        }
+    )
+    kernel = Kernel(settings)
+    kernel.register(
+        PluginEntry(
+            manifest=manifest("projection", PluginKind.FORECAST),
+            build=lambda ctx, **params: params,
+            module="tests.fake.projection",
+        )
+    )
+
+    assert kernel.build("forecast:projection", bars_ahead=5) == {
+        "bars_ahead": 5,
+        "refresh_on_close": True,
+    }
+
+
 def test_capability_resolves_to_its_provider(kernel: Kernel) -> None:
     kernel.register(entry("bars", provides=("bars",)))
     assert kernel.capability("bars")["name"] == "bars"

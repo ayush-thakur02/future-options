@@ -1,0 +1,9 @@
+weights:
+  squeeze_release: 0.7
+  vol_breakout: 0.6
+  vol_reversion: 0.4
+  vol_regime: 0.5
+
+parameters:
+  vol_breakout:
+    atr_multiple: 1.1

@@ -219,7 +219,9 @@ src/
 
 docs/                      # full documentation, see docs/README.md
 tests/                     # indicator, strategy, storage, AI, runtime and CLI tests
-config/default.yaml        # settings
+config/
+├── default.yaml           # platform-wide settings
+└── plugins/               # one YAML file per plugin, nested by kind
 data/                      # partitioned store: candles, ticks, chain
 ```
 

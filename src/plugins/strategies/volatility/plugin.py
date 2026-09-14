@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from kernel import PluginContext, PluginKind, PluginManifest
 
-from ..base import StrategyPack
+from ..base import StrategyPack, make_strategy_pack
 from .rules import STRATEGIES
 
 MANIFEST = PluginManifest(
@@ -21,11 +21,13 @@ MANIFEST = PluginManifest(
 )
 
 
-def build(ctx: PluginContext, **params) -> StrategyPack:
+def build(ctx: PluginContext, parameters=None, weights=None, **params) -> StrategyPack:
     """Instantiate every rule in the pack. Strategies are stateless, so this is cheap."""
-    return StrategyPack(
+    return make_strategy_pack(
         name="volatility",
         category="volatility",
         description=MANIFEST.description,
-        instances=tuple(cls() for cls in STRATEGIES),
+        strategy_types=STRATEGIES,
+        parameters=parameters,
+        weights=weights,
     )

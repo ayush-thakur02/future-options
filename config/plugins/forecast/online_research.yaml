@@ -1,0 +1,13 @@
+# null paths resolve beneath data/research.
+state_path: null
+algorithms:
+  - online_logistic
+  - passive_aggressive
+  - gaussian_nb
+rolling_window: 100
+min_trust_samples: 50
+min_trust_for_action: 0.15
+buy_probability: 0.56
+sell_probability: 0.44
+# null derives the hurdle from the platform cost model.
+cost_bps: null

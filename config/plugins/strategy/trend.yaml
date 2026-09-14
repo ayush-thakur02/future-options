@@ -1,0 +1,11 @@
+weights:
+  ema_trend: 1.0
+  supertrend: 0.9
+  donchian_breakout: 0.7
+  orb: 0.6
+  efficiency_trend: 0.8
+
+# These rules currently derive their thresholds from technical features and do
+# not expose constructor parameters. Their ensemble influence is configurable
+# through the weights above.
+parameters: {}

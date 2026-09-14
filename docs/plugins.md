@@ -152,19 +152,19 @@ under a live market feed, so a bad handler must not take the feed down.
 
 ## Parameters
 
-Anything a plugin declares in `params`, or that appears under `plugins:` in
-`config/default.yaml`, is merged into the kwargs `build` receives:
+Anything a plugin declares in `params`, or that appears in its nested config
+file, is merged into the kwargs `build` receives. The path mirrors the plugin
+handle:
 
 ```yaml
-plugins:
-  forecast:projection:
-    bars_ahead: 5
-  source:simulated:
-    days: 30
+# config/plugins/forecast/projection.yaml
+bars_ahead: 5
 ```
 
 So tuning a plugin is a config edit, not a code change. Explicit parameters win
-over configured ones:
+over configured ones. Every bundled plugin has a populated file under
+`config/plugins/<kind>/`. Strategy files additionally expose per-rule `weights`
+and constructor `parameters`:
 
 ```python
 kernel.build("forecast:projection")                    # configured, memoised

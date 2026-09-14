@@ -1,0 +1,3 @@
+# Set a path to override data/research/strategies.sqlite3.
+path: null
+min_trust_samples: 50

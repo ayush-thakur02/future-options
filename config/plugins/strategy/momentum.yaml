@@ -1,0 +1,12 @@
+weights:
+  macd_momentum: 0.8
+  roc_momentum: 0.7
+  stochastic: 0.4
+  activity_spike: 0.5
+  order_flow: 0.9
+
+parameters:
+  stochastic:
+    oversold: 20.0
+    overbought: 80.0
+    hold_bars: 5

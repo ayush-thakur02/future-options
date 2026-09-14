@@ -1,0 +1,5 @@
+# Forecast horizon in bars and minimum probability edge above 0.5.
+horizon: 1
+min_edge: 0.04
+# Default ensemble prior; set to 0 to exclude the model from the blend.
+weight: 0.5

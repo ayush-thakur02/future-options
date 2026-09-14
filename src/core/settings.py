@@ -2,6 +2,8 @@
 
 Settings come from (in order of precedence): explicit arguments, environment
 variables, an optional YAML file at ``config/default.yaml``, then defaults.
+Plugin parameters are loaded from the nested ``config/plugins`` tree, with the
+legacy ``plugins:`` block in ``default.yaml`` retained as an override.
 
 Part of ``core``: the vocabulary and configuration every plugin shares. Nothing
 here imports a plugin, which is what lets the plugin tree depend on ``core``
@@ -110,9 +112,9 @@ class Settings:
 
     credentials: UpstoxCredentials = field(default_factory=UpstoxCredentials)
 
-    # Per-plugin parameters, keyed by handle ("forecast:projection"). The kernel
-    # merges these into the kwargs a plugin's build() receives, so tuning a
-    # plugin is a config edit rather than a code change.
+    # Per-plugin parameters, keyed by handle ("forecast:projection") and loaded
+    # from config/plugins/<kind>/<name>.yaml. The kernel merges these into the
+    # kwargs a plugin's build() receives, so tuning stays out of the code.
     plugin_config: dict[str, dict] = field(default_factory=dict)
 
     def ensure_dirs(self) -> None:
@@ -164,16 +166,56 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(handle) or {}
 
 
+def _load_plugin_configs(config_dir: Path) -> dict[str, dict]:
+    """Load ``plugins/<kind>/**/<name>.yaml`` as ``<kind>:<name>`` params.
+
+    The first directory is the plugin kind and the filename is the plugin name.
+    Any directories between them are organizational, matching the fact that the
+    code-side plugin loader permits arbitrary nesting too.
+    """
+    plugins_dir = config_dir / "plugins"
+    if not plugins_dir.is_dir():
+        return {}
+
+    configs: dict[str, dict] = {}
+    paths = sorted(
+        path
+        for path in plugins_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}
+    )
+    for path in paths:
+        relative = path.relative_to(plugins_dir)
+        if len(relative.parts) < 2:
+            raise ValueError(
+                f"plugin config {path} must be nested under a kind directory, "
+                "for example plugins/forecast/projection.yaml"
+            )
+
+        handle = f"{relative.parts[0]}:{path.stem}"
+        values = _load_yaml(path)
+        if not isinstance(values, dict):
+            raise ValueError(f"plugin config {path} must contain a YAML mapping")
+        if handle in configs:
+            raise ValueError(f"duplicate config for plugin {handle!r}: {path}")
+        configs[handle] = dict(values)
+    return configs
+
+
 def load_settings(config_path: Path | None = None) -> Settings:
     """Build :class:`Settings` from env, YAML, and defaults."""
     root = project_root()
     load_dotenv(root / ".env", override=False)
 
-    raw = _load_yaml(config_path or root / "config" / "default.yaml")
+    selected_config = config_path or root / "config" / "default.yaml"
+    raw = _load_yaml(selected_config)
     data_cfg = raw.get("data", {})
     model_cfg = raw.get("model", {})
     backtest_cfg = raw.get("backtest", {})
-    plugins_cfg = raw.get("plugins", {}) or {}
+    plugins_cfg = _load_plugin_configs(selected_config.parent)
+    # Backward compatibility: an inline block remains valid and wins over the
+    # per-plugin file, just as an override in the main config did previously.
+    for handle, values in (raw.get("plugins", {}) or {}).items():
+        plugins_cfg.setdefault(str(handle), {}).update(dict(values or {}))
 
     credentials = UpstoxCredentials(
         client_id=os.getenv("UPSTOX_CLIENT_ID"),

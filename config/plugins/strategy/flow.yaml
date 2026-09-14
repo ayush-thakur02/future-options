@@ -1,0 +1,9 @@
+weights:
+  chaikin_flow_trend: 0.5
+  money_flow_reversal: 0.5
+  obv_divergence: 0.5
+
+parameters:
+  money_flow_reversal:
+    low: 22.0
+    high: 78.0

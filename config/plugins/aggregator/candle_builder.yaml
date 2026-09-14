@@ -1,0 +1,2 @@
+# null inherits data.bar_minutes from config/default.yaml.
+bar_minutes: null

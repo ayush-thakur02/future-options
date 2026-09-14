@@ -1,0 +1,3 @@
+# null inherits the platform's configured weekly expiry day.
+expiry_weekday: null
+include_context: true

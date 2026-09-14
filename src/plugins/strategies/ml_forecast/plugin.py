@@ -31,6 +31,7 @@ def build(
     ctx: PluginContext,
     horizon: int = 1,
     min_edge: float = 0.04,
+    weight: float = 0.5,
     **params,
 ) -> StrategyPack:
     """Bind the ML strategy to the model trained for ``horizon``.
@@ -61,4 +62,5 @@ def build(
                 hurdle_bps=float(artifact.get("hurdle_bps", 0.0)),
             ),
         ),
+        weights={"ml": float(weight)},
     )

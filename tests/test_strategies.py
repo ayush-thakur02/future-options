@@ -7,11 +7,13 @@ weight naming a strategy that does not exist — looks like a working dashboard.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from core.settings import Settings
+from core.settings import Settings, load_settings
 from kernel import Kernel, PluginEntry, PluginKind, PluginManifest
 from plugins.features.technical import build_features
 from plugins.sources.simulated.series import generate_candles
@@ -117,6 +119,42 @@ def test_ensemble_skips_weights_for_absent_strategies(catalog: StrategyCatalog) 
     """The ML strategy is absent offline, so its weight must simply not apply."""
     ensemble = catalog.ensemble({"ml": 1.0, "ema_trend": 1.0})
     assert [strategy.name for strategy, _ in ensemble.components] == ["ema_trend"]
+
+
+def test_repository_yaml_configures_strategy_parameters_and_weights() -> None:
+    project = Path(__file__).resolve().parents[1]
+    settings = load_settings(project / "config" / "default.yaml")
+    catalog = StrategyCatalog.from_kernel(Kernel.bootstrap(settings, with_entry_points=False))
+
+    channels = catalog.pack_of("regression_channel_breakout")
+    regression = catalog.get("regression_channel_breakout")
+    assert regression.window == 30
+    assert regression.entry_z == pytest.approx(1.35)
+    assert channels.weights["channel_pressure"] == pytest.approx(0.5)
+
+    ensemble_weights = {
+        strategy.name: weight for strategy, weight in catalog.ensemble().components
+    }
+    assert ensemble_weights["ema_trend"] == pytest.approx(1.0)
+    assert ensemble_weights["order_flow"] == pytest.approx(0.9)
+
+
+def test_zero_configured_weight_excludes_only_from_default_ensemble() -> None:
+    settings = Settings(
+        plugin_config={
+            "strategy:momentum": {
+                "weights": {"macd_momentum": 0.0},
+                "parameters": {"stochastic": {"hold_bars": 2}},
+            }
+        }
+    )
+    catalog = StrategyCatalog.from_kernel(Kernel.bootstrap(settings, with_entry_points=False))
+
+    assert "macd_momentum" in catalog
+    assert catalog.get("stochastic").hold_bars == 2
+    assert "macd_momentum" not in {
+        strategy.name for strategy, _ in catalog.ensemble().components
+    }
 
 
 def test_ensemble_of_nothing_is_flat(context: StrategyContext) -> None:

@@ -1,0 +1,8 @@
+weights:
+  hurst_adaptive: 0.5
+  directional_entropy: 0.5
+  volatility_state_rotation: 0.5
+
+parameters:
+  directional_entropy:
+    window: 24

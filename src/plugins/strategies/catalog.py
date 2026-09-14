@@ -123,8 +123,15 @@ class StrategyCatalog:
         """
         available = {strategy.name: strategy for strategy in self.all()}
         if weights is None:
+            configured = {
+                name: weight
+                for pack in self.packs
+                for name, weight in pack.weights.items()
+            }
             weights = {
-                name: DEFAULT_WEIGHTS.get(name, strategy.default_weight)
+                name: configured.get(
+                    name, DEFAULT_WEIGHTS.get(name, strategy.default_weight)
+                )
                 for name, strategy in available.items()
             }
         composite = CompositeStrategy()

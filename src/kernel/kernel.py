@@ -75,7 +75,7 @@ class Kernel:
     # ---------------------------------------------------------------- building
 
     def params_for(self, handle: str) -> dict[str, Any]:
-        """Configured params for a handle, from ``plugins:`` in the config file."""
+        """Configured params for a handle, normally from its nested YAML file."""
         return dict(self._params.get(handle, {}))
 
     def configure(self, params: Mapping[str, Mapping[str, Any]]) -> None:
@@ -86,7 +86,7 @@ class Kernel:
         """Build a plugin. Cached when unparameterised, fresh when parameterised."""
         entry = self.registry.get(handle)
         if params:
-            return self._invoke(entry, params)
+            return self._invoke(entry, {**self.params_for(handle), **params})
         if handle not in self._instances:
             self._instances[handle] = self._invoke(entry, self.params_for(handle))
         return self._instances[handle]

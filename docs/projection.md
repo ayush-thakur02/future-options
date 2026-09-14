@@ -163,10 +163,9 @@ dashboard down for.
 ## Turning it off
 
 Projections are optional. With the pack disabled, `engine.refresh_projection()`
-returns `False`, the chart draws printed bars only, and nothing else changes:
+returns `False`, the chart draws printed bars only, and nothing else changes.
+Its tuning lives in `config/plugins/forecast/projection.yaml`:
 
 ```yaml
-plugins:
-  forecast:projection:
-    bars_ahead: 3      # or disable the pack in your composition
+bars_ahead: 3      # or disable the pack in your composition
 ```

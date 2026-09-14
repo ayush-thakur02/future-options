@@ -15,9 +15,10 @@ of it.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -89,6 +90,9 @@ class StrategyPack:
     category: str
     instances: tuple[Strategy, ...]
     description: str = ""
+    # Optional per-pack ensemble priors. Keeping them on the pack means a plugin
+    # YAML file can tune its own rules without changing the central catalog.
+    weights: dict[str, float] = field(default_factory=dict)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -102,6 +106,56 @@ class StrategyPack:
 
     def __len__(self) -> int:
         return len(self.instances)
+
+
+def make_strategy_pack(
+    *,
+    name: str,
+    category: str,
+    description: str,
+    strategy_types: tuple[type[Strategy], ...],
+    parameters: Mapping[str, Mapping[str, Any] | None] | None = None,
+    weights: Mapping[str, float] | None = None,
+) -> StrategyPack:
+    """Instantiate a pack from validated YAML-friendly configuration.
+
+    ``parameters`` is keyed by strategy name and passed to that strategy's
+    constructor. ``weights`` supplies ensemble priors; a zero weight leaves the
+    strategy directly available while excluding it from the default ensemble.
+    """
+    available = {strategy_type.name: strategy_type for strategy_type in strategy_types}
+    configured_parameters = dict(parameters or {})
+    configured_weights = dict(weights or {})
+
+    unknown = (set(configured_parameters) | set(configured_weights)) - set(available)
+    if unknown:
+        choices = ", ".join(sorted(available))
+        raise ValueError(
+            f"unknown strategies in {name} config: {', '.join(sorted(unknown))}; "
+            f"available: {choices}"
+        )
+
+    instances: list[Strategy] = []
+    for strategy_name, strategy_type in available.items():
+        values = configured_parameters.get(strategy_name) or {}
+        if not isinstance(values, Mapping):
+            raise ValueError(f"parameters for {strategy_name} must be a mapping")
+        instances.append(strategy_type(**dict(values)))
+
+    normalized_weights: dict[str, float] = {}
+    for strategy_name, value in configured_weights.items():
+        weight = float(value)
+        if not np.isfinite(weight):
+            raise ValueError(f"weight for {strategy_name} must be finite")
+        normalized_weights[strategy_name] = weight
+
+    return StrategyPack(
+        name=name,
+        category=category,
+        description=description,
+        instances=tuple(instances),
+        weights=normalized_weights,
+    )
 
 
 def _last_timestamp(index: pd.Index) -> datetime:

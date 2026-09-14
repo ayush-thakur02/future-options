@@ -179,13 +179,12 @@ theta per minute, implied vol, and the requirement in basis points.
 The gate charges 1.2% of premium round trip by default
 (`DEFAULT_COST_RATE`): brokerage both ways, exchange charges, STT on the sell leg,
 GST, and a spread — which on an option is usually the largest single item.
-Deliberately pessimistic, and configurable:
+Deliberately pessimistic, and configurable in
+`config/plugins/advisory/breakeven_gate.yaml`:
 
 ```yaml
-plugins:
-  advisory:breakeven_gate:
-    cost_rate: 0.015
-    horizon_bars: 3
+cost_rate: 0.015
+horizon_bars: 3
 ```
 
 `backtest/costs.py` already models Indian derivatives properly (STT on the sell
