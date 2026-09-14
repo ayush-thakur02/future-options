@@ -149,6 +149,29 @@ def test_ftrl_adapts_without_mutating_during_prediction(tmp_path) -> None:
     assert algorithm.predict_proba({"momentum": 1.0}) > 0.60
 
 
+def test_strategy_combination_learner_discovers_live_joint_states(tmp_path) -> None:
+    lab = OnlineResearchLab(
+        tmp_path / "online.sqlite3",
+        algorithms={
+            "strategy_combinations": {
+                "max_order": 3,
+                "min_support": 3,
+                "decay": 1.0,
+            }
+        },
+    )
+    algorithm = lab.algorithms["strategy_combinations"]
+    bullish = {"strategy__trend": 0.8, "strategy__momentum": 0.7}
+    bearish = {"strategy__trend": -0.8, "strategy__momentum": -0.7}
+    for _ in range(12):
+        algorithm.update(bullish, 1)
+        algorithm.update(bearish, 0)
+
+    assert algorithm.predict_proba(bullish) > 0.80
+    assert algorithm.predict_proba(bearish) < 0.20
+    assert any(key.startswith("2|") for key in algorithm.experts)
+
+
 @pytest.mark.parametrize("algorithm", tuple(ALGORITHMS))
 def test_pending_ledger_and_fitted_models_survive_restart(tmp_path, algorithm) -> None:
     path = tmp_path / "online.sqlite3"

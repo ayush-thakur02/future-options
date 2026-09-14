@@ -10,6 +10,7 @@ from .ftrl import OnlineFTRL
 from .gaussian_nb import OnlineGaussianNB
 from .logistic import OnlineLogistic
 from .passive_aggressive import OnlinePassiveAggressive
+from .strategy_combinations import OnlineStrategyCombinations
 
 AlgorithmFactory = Callable[..., OnlineClassifier]
 
@@ -19,6 +20,7 @@ ALGORITHMS: dict[str, AlgorithmFactory] = {
     OnlineGaussianNB.name: OnlineGaussianNB,
     OnlineFTRL.name: OnlineFTRL,
     OnlineAdaptiveKNN.name: OnlineAdaptiveKNN,
+    OnlineStrategyCombinations.name: OnlineStrategyCombinations,
 }
 
 
@@ -50,5 +52,6 @@ __all__ = [
     "OnlineGaussianNB",
     "OnlineLogistic",
     "OnlinePassiveAggressive",
+    "OnlineStrategyCombinations",
     "build_algorithms",
 ]

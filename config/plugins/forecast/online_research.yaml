@@ -21,6 +21,18 @@ algorithms:
     half_life: 80.0
     max_features: 48
     prior_strength: 2.0
+  strategy_combinations:
+    max_active: 8
+    max_order: 3
+    min_support: 4
+    min_strength: 0.15
+    prior_strength: 2.0
+    decay: 0.995
+    max_states: 5000
+# Strongest strategies used for explicit pair/triple interaction features sent
+# to FTRL, KNN and the other online learners.
+strategy_feature_limit: 8
+interaction_order: 3
 rolling_window: 100
 min_trust_samples: 50
 min_trust_for_action: 0.15

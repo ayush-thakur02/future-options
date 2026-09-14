@@ -21,11 +21,21 @@ def test_engine_issues_and_scores_each_online_algorithm_after_research_is_enable
         generate_candles(days=4, seed=901)
     )
     engine.enable_research()
-    engine._recompute(issue_research=True)
 
     assert engine.online_lab is not None
     assert engine.performance is not None
     assert engine.online_lab.pending_count == len(ALGORITHMS) * 3
+    records = engine.online_lab.records(limit=len(ALGORITHMS) * 3)
+    assert any(
+        name.startswith("strategy__")
+        for record in records
+        for name in record.features
+    )
+    assert any(
+        name.startswith("strategy_combo")
+        for record in records
+        for name in record.features
+    )
 
     target = engine.history.index[-1] + pd.Timedelta(minutes=1)
     engine._observe_research(

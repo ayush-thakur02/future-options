@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
+import math
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -344,7 +346,7 @@ class Engine:
                 cost_bps=cost,
             )
         if self.online_lab is not None:
-            row = self.features.iloc[-1].to_dict()
+            row = self._realtime_learning_features()
             self.ai_signals = {
                 bars_ahead: self.online_lab.issue(
                     row,
@@ -356,6 +358,55 @@ class Engine:
                 )
                 for bars_ahead in range(1, 4)
             }
+
+    def _realtime_learning_features(self) -> dict[str, float]:
+        """Technical state plus bounded strategy permutations and past quality.
+
+        Every value is known at issue time. Strategy accuracy/trust comes only
+        from previously matured outcomes, so feeding it back into the online
+        learner preserves the causal boundary.
+        """
+        row = {
+            str(name): float(value)
+            for name, value in self.features.iloc[-1].items()
+            if pd.notna(value) and math.isfinite(float(value))
+        }
+        usable = [
+            signal
+            for signal in self.signals
+            if signal.meta.get("state") not in {"N/A", "ERROR"}
+            and math.isfinite(float(signal.score))
+        ]
+        for signal in usable:
+            row[f"strategy__{signal.strategy}"] = float(signal.score)
+            stat = self.rule_stats.get(signal.strategy, {})
+            row[f"strategy_trust__{signal.strategy}"] = float(stat.get("trust_score", 0.0))
+            samples = int(stat.get("scored", 0))
+            row[f"strategy_edge__{signal.strategy}"] = (
+                (float(stat.get("accuracy", 0.5)) - 0.5) * 2.0 if samples else 0.0
+            )
+
+        config = self.settings.plugin_config.get("forecast:online_research", {})
+        limit = max(int(config.get("strategy_feature_limit", 8)), 1)
+        order = max(1, min(int(config.get("interaction_order", 3)), 3))
+        strongest = sorted(usable, key=lambda signal: (-abs(signal.score), signal.strategy))[:limit]
+        for size in range(2, min(order, len(strongest)) + 1):
+            for combination in itertools.combinations(strongest, size):
+                names = "__".join(signal.strategy for signal in combination)
+                row[f"strategy_combo{size}__{names}"] = math.prod(
+                    float(signal.score) for signal in combination
+                )
+
+        scores = [float(signal.score) for signal in usable]
+        active = [score for score in scores if abs(score) >= 0.15]
+        row["strategy_meta__breadth"] = sum(active) / len(active) if active else 0.0
+        row["strategy_meta__agreement"] = (
+            abs(sum(1 if score > 0 else -1 for score in active)) / len(active)
+            if active
+            else 0.0
+        )
+        row["strategy_meta__active"] = float(len(active))
+        return row
 
     def _refresh_rule_stats(self) -> None:
         if self.performance is None:
@@ -577,6 +628,11 @@ class Engine:
         if capabilities.get("strategy_performance"):
             self.performance = self.kernel.capability("strategy_performance")
             self._refresh_rule_stats()
+        # Issue an honest forecast immediately from the warmed state. It remains
+        # pending until a future bar closes, but makes the auto-learning system
+        # visible without waiting one whole interval for the first issue.
+        if self.online_lab is not None and not self.features.empty:
+            self._issue_research()
 
     def _ai_snapshot(self) -> dict:
         if self.online_lab is None:
