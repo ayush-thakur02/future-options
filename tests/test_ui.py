@@ -293,7 +293,38 @@ def test_dashboard_renders_without_models(bars) -> None:
     Console(width=110, height=36, file=buffer, force_terminal=False).print(
         dash.build(snapshot(bars), "no models")
     )
-    assert "no trained models loaded" in buffer.getvalue()
+    assert "no batch training required" in buffer.getvalue()
+
+
+def test_single_dashboard_prefers_realtime_predictions_without_batch_models(bars) -> None:
+    frame = snapshot(bars)
+    frame.research = {
+        "ai": {
+            "signals": {
+                1: {
+                    "action": "BUY",
+                    "p_up": 0.63,
+                    "confidence": 0.26,
+                    "trust_score": 0.41,
+                    "algorithms": [
+                        {"name": "strategy_combinations", "p_up": 0.68, "trust_score": 0.44}
+                    ],
+                }
+            }
+        }
+    }
+    import io
+
+    renderer = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
+    renderer.console = Console(width=130, height=40)
+    buffer = io.StringIO()
+    Console(width=130, height=40, file=buffer, force_terminal=False).print(
+        renderer.build(frame, "live")
+    )
+    rendered = buffer.getvalue()
+    assert "REALTIME auto-AI" in rendered
+    assert "strategy_combinations" in rendered
+    assert "no offline training required" in rendered
 
 
 def test_dashboard_shows_model_agreement_card(bars) -> None:

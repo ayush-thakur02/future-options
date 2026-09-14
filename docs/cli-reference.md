@@ -156,7 +156,7 @@ traded.
 | `--legs / --no-legs` | on | Chart the at-the-money call and put beside the index |
 | `--workers` | configured | CPU workers; `-1` uses all available CPUs |
 | `--learn / --no-learn` | on | Update per-instrument online return learners |
-| `--view` | `research` | Initial panel: `research`, `costs`, `indicators`, `ai`, or `prediction` |
+| `--view` | `ai` | Initial panel: `research`, `costs`, `indicators`, `ai`, or `prediction` |
 
 Offline, the feed is **paced against the wall clock** — a one-minute bar takes a
 minute — so the projected candles have seconds to move in. `--speed 60` makes a

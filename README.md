@@ -1,7 +1,7 @@
 # NIFTY Pulse
 
 A scalping research platform for NIFTY 50. It streams independent index, call and
-put prices from Upstox, evaluates **30 causal strategies** and five online
+put prices from Upstox, evaluates **30 causal strategies** and six online
 AI classifiers, and projects the **next three complete candles**. Every forecast
 and active strategy signal is frozen at issue time and scored when its exact
 target bar closes.
@@ -11,6 +11,8 @@ price error as target candles close. Start with `niftypulse doctor --live` and
 `niftypulse dashboard --workers -1`. Press `1` for research, `2` for positions,
 `3` for indicators, `4` for AI, `5` for prediction graphs, `j`/`k` to scroll
 strategy rows, and `q` to exit.
+The realtime AI scorecard is the default view; no `niftypulse train` step is
+required for it.
 Inspect the vertically scrollable audit trail with `niftypulse research` or export
 it with `niftypulse research --json`.
 

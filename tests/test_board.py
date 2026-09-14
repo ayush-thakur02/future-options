@@ -382,7 +382,7 @@ def test_board_draws_all_three_legs(board, width: int, height: int) -> None:
     assert "INDEX" in rendered
     assert "CALL" in rendered
     assert "PUT" in rendered
-    assert "forward results" in rendered
+    assert "REALTIME AUTO-AI" in rendered
     assert "plugin strategies" in rendered
 
 
@@ -423,6 +423,13 @@ def test_leg_panels_are_marked_blue_when_a_path_is_drawn(board) -> None:
     panel = board_panels.leg_panel(leg, 44, 10, "1m")
     assert leg.snapshot.projections
     assert panel.border_style == "bright_blue"
+
+
+def test_default_board_makes_auto_learning_visible(board) -> None:
+    rendered = "\n".join(render_board(board, 140, 44))
+    assert "REALTIME AUTO-AI" in rendered
+    assert "auto-updates each bar" in rendered or "no batch training" in rendered
+    assert "AI warming" in rendered
 
 
 def test_projected_leg_candles_are_blue_and_never_directional(board) -> None:

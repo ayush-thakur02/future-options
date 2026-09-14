@@ -79,6 +79,10 @@ return and trust when outcomes exist. Use `j` and `k` to move through its rows.
 
 The right panel changes with the numbered views:
 
+The realtime AI scorecard (`4`) is the default. It shows the index learners'
+matured W/L counts, accuracy, net result and trust while every chart carries its
+current one-bar action and probability.
+
 | Key | View |
 |---|---|
 | `1` | Frozen projected-candle results by leg and horizon |
@@ -111,11 +115,11 @@ niftypulse dashboard --no-legs
 ╰───────────────────╯╰────────────────────────────────────────────╯
 ```
 
-The **forecasts** panel is the trained model: probability, expected move, and
-whether the move clears the round trip. The **projected candles** panel is the
-path, bar by bar, with the hit rate the projection has scored so far. They are
-different objects and they disagree by design — one is a calibrated probability on
-a fixed horizon, the other a live path that includes the last twenty seconds.
+The **realtime auto-AI** panel is the default forecast: probability, confidence,
+trust and BUY/SELL/HOLD research classification at each horizon. It learns when
+exact future target bars close and does not require offline training. If batch
+artifacts exist, their cost-aware forecast remains available as a fallback. The
+**projected candles** panel is the continuously rebuilt price path, bar by bar.
 The **prediction quality** card shows member agreement and the full member
 probability range at each horizon. A strong headline with a wide model range is
 visible disagreement, not false certainty.

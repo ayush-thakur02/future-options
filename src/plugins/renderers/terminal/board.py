@@ -103,9 +103,27 @@ def leg_panel(leg: LegSnapshot, width: int, height: int, timeframe: str) -> Pane
         rows.append(Text(f" +{candle.horizon} {candle.ts:%H:%M}  {candle.close:,.2f}  {candle.change_bps:+.1f}bp", style="bright_blue"))
     for _ in range(max(3 - len(snap.projections), 0)):
         rows.append(Text(" waiting for a current market candle", style="grey50"))
-    online = snap.research.get("online", {})
-    samples = online.get("samples", {}).get(1, 0)
-    rows.append(Text(f" learned {samples:,} · new labels {online.get('live_updates', 0):,} · {snap.research.get('compute_ms', 0):.0f}ms/bar", style="grey62"))
+    ai = snap.research.get("ai", {})
+    one_bar = ai.get("signals", {}).get(1, {})
+    cards = ai.get("scorecards", [])
+    leader = max(cards, key=lambda card: (card.get("trust_score", 0), card.get("samples", 0)), default={})
+    if one_bar:
+        rows.append(
+            Text(
+                f" AI +1 {one_bar.get('action', 'HOLD')} P↑{one_bar.get('p_up', 0.5):.2f} "
+                f"T{one_bar.get('trust_score', 0):.0%} · "
+                f"best {leader.get('algorithm', 'warming')} "
+                f"{leader.get('wins', 0)}/{leader.get('losses', 0)}",
+                style="bright_cyan",
+            )
+        )
+    else:
+        rows.append(
+            Text(
+                f" AI warming · auto-trains each bar · {snap.research.get('compute_ms', 0):.0f}ms/bar",
+                style="grey62",
+            )
+        )
     for row in rows:
         row.no_wrap = True
         row.overflow = "ellipsis"
@@ -266,23 +284,24 @@ def strategy_matrix(
 
 
 def ai_scores(board: BoardSnapshot) -> Panel:
+    """Realtime index learners with explicit success/failure and live leg views."""
     table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
-    for name in ("leg", "algorithm", "n", "acc", "roll", "net bp", "DD", "trust"):
-        table.add_column(name, justify="left" if name in {"leg", "algorithm"} else "right")
+    for name in ("algorithm", "n", "W/L", "acc", "net bp", "trust"):
+        table.add_column(name, justify="left" if name == "algorithm" else "right")
     signal_lines = []
+    spot = board.spot_leg
+    cards = spot.snapshot.research.get("ai", {}).get("scorecards", []) if spot else []
+    for card in cards:
+        table.add_row(
+            card["algorithm"],
+            str(card["samples"]),
+            f"{card.get('wins', 0)}/{card.get('losses', 0)}",
+            f"{card['accuracy']:.1%}" if card["samples"] else "—",
+            f"{card['net_pnl_bps']:+.1f}",
+            f"{card['trust_score']:.0%}",
+        )
     for leg in board.legs:
         ai = leg.snapshot.research.get("ai", {})
-        for index, card in enumerate(ai.get("scorecards", [])):
-            table.add_row(
-                leg.label if index == 0 else "",
-                card["algorithm"],
-                str(card["samples"]),
-                f"{card['accuracy']:.1%}" if card["samples"] else "—",
-                f"{card['rolling_accuracy']:.1%}" if card["samples"] else "—",
-                f"{card['net_pnl_bps']:+.1f}",
-                f"{card.get('drawdown_bps', 0):.1f}",
-                f"{card['trust_score']:.0%}",
-            )
         signals = ai.get("signals", {})
         if signals:
             views = " ".join(
@@ -290,9 +309,19 @@ def ai_scores(board: BoardSnapshot) -> Panel:
                 for h, item in sorted(signals.items())
             )
             signal_lines.append(f"{leg.label} {views}")
-    footer = Text("\n".join(signal_lines) if signal_lines else "Waiting for the next completed bar", style="grey62")
-    footer.append("\nResearch signals only · probability/trust · no orders are placed", style="bright_yellow")
-    return Panel(Group(table, footer), title="[grey62]online AI · prequential scorecards[/]", border_style=PANEL_BORDER)
+    footer = Text(
+        "\n".join(signal_lines) if signal_lines else "Issuing first prediction from warmed state",
+        style="grey62",
+    )
+    footer.append(
+        "\nW/L = matured success/failure · auto-updates each bar · no batch training",
+        style="bright_cyan",
+    )
+    return Panel(
+        Group(table, footer),
+        title="[grey62]REALTIME AUTO-AI · INDEX learner scorecards[/]",
+        border_style="bright_cyan",
+    )
 
 
 def scalp_costs(board: BoardSnapshot) -> Panel:

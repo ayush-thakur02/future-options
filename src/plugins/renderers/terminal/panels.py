@@ -119,16 +119,55 @@ def chart(snapshot: MarketSnapshot, width: int, height: int, timeframe: str) -> 
 
 
 def forecasts(snapshot: MarketSnapshot) -> Panel:
-    """The ML view: does the forecast move pay for the round trip?"""
+    """Prefer the live auto-learning view; show batch forecasts when available."""
+    ai_signals = snapshot.research.get("ai", {}).get("signals", {})
+    if ai_signals:
+        table = Table(expand=True, box=None, header_style="grey50", padding=(0, 1))
+        table.add_column("h", justify="right", width=4)
+        table.add_column("live view", width=6)
+        table.add_column("P(up)", justify="right", width=6)
+        table.add_column("distribution", width=12, no_wrap=True)
+        table.add_column("confidence", justify="right", width=10)
+        table.add_column("trust", justify="right", width=7)
+        for horizon, item in sorted(ai_signals.items()):
+            probability = float(item.get("p_up", 0.5))
+            action = str(item.get("action", "HOLD"))
+            style = (
+                "bright_green" if action == "BUY"
+                else "bright_red" if action == "SELL"
+                else "bright_yellow"
+            )
+            table.add_row(
+                f"{horizon}m",
+                Text(action, style=style),
+                Text(f"{probability:.3f}", style=change_style(probability - 0.5)),
+                Text.from_markup(probability_bar(probability, width=12)),
+                f"{float(item.get('confidence', 0.0)):.0%}",
+                f"{float(item.get('trust_score', 0.0)):.0%}",
+            )
+        footer = Text(
+            "Learns on exact future closes · no offline training required",
+            style="bright_cyan",
+        )
+        return Panel(
+            Group(table, footer),
+            title=f"[{TITLE_STYLE}]REALTIME auto-AI · causal forward predictions[/]",
+            border_style="bright_cyan",
+        )
+
     if not snapshot.predictions:
         body = Align.center(
-            Text.from_markup(
-                "no trained models loaded\nrun [bold]niftypulse train[/] to enable forecasts",
+            Text(
+                "waiting for realtime learner\nfirst prediction is issued from the warmed state",
                 justify="center",
             ),
             style="grey50",
         )
-        return Panel(body, title=f"[{TITLE_STYLE}]forecasts[/]", border_style=PANEL_BORDER)
+        return Panel(
+            body,
+            title=f"[{TITLE_STYLE}]realtime forecasts · no batch training required[/]",
+            border_style=PANEL_BORDER,
+        )
 
     table = Table(expand=True, box=None, header_style="grey50", padding=(0, 1))
     table.add_column("h", justify="right", width=4)
@@ -286,10 +325,31 @@ def indicators(snapshot: MarketSnapshot) -> Panel:
 
 def model_diagnostics(snapshot: MarketSnapshot) -> Panel:
     """Model agreement and horizon shape, separate from headline probability."""
+    ai_signals = snapshot.research.get("ai", {}).get("signals", {})
+    if not snapshot.predictions and ai_signals:
+        horizon = min(ai_signals)
+        algorithms = ai_signals[horizon].get("algorithms", [])
+        table = Table(expand=True, box=None, header_style="grey50", padding=(0, 1))
+        table.add_column("online learner", ratio=1)
+        table.add_column("P(up)", justify="right", width=6)
+        table.add_column("trust", justify="right", width=6)
+        for item in algorithms:
+            probability = float(item.get("p_up", 0.5))
+            table.add_row(
+                str(item.get("name", "model")),
+                Text(f"{probability:.2f}", style=change_style(probability - 0.5)),
+                f"{float(item.get('trust_score', 0.0)):.0%}",
+            )
+        return Panel(
+            table,
+            title=f"[{TITLE_STYLE}]live learner votes · +{horizon} bar[/]",
+            border_style="bright_cyan",
+        )
+
     if not snapshot.predictions:
         return Panel(
-            Align.center(Text("model diagnostics appear after training", style="grey50")),
-            title=f"[{TITLE_STYLE}]prediction quality[/]",
+            Align.center(Text("online learners are warming", style="grey50")),
+            title=f"[{TITLE_STYLE}]live learner votes[/]",
             border_style=PANEL_BORDER,
         )
 

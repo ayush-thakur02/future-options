@@ -165,9 +165,13 @@ before drawing conclusions.
 **Do not set `train_n_jobs` and the estimator `n_jobs` both to `-1`.** They
 oversubscribe the CPU and run measurably slower than either alone.
 
-### `no trained models` in the dashboard
+### `waiting for realtime learner` in the dashboard
 
-Run `uv run niftypulse train` first. The forecasts panel says so explicitly.
+Realtime research is enabled by default and issues its first prediction from the
+warmed state during startup. If it remains waiting, check that `--learn` is on
+and that enough valid history loaded to build features. Batch artifacts are
+optional; `uv run niftypulse train` is only needed for the separate offline
+walk-forward ensemble.
 
 ### Accuracy is 50% and AUC is 0.50
 

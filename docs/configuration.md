@@ -178,7 +178,9 @@ tree.
 | `advisory:breakeven_gate` | `cost_rate` | `0.012` | Round-trip cost as a fraction of premium |
 | `advisory:breakeven_gate` | `horizon_bars` | `3` | Horizon the requirement is quoted over |
 | `forecast:ml_ensemble` | `models`, `weights`, `parameters` | six learners | Batch model selection, soft-vote influence, and estimator hyperparameters |
-| `forecast:online_research` | `algorithms` | all five | Mapping of learner names to parameters: logistic, passive-aggressive, Gaussian NB, FTRL and adaptive KNN |
+| `forecast:online_research` | `algorithms` | all six | Mapping of learner names to parameters, including FTRL, adaptive KNN, and strategy combinations |
+| `forecast:online_research` | `strategy_feature_limit` | `8` | Strongest strategy scores eligible for explicit interactions |
+| `forecast:online_research` | `interaction_order` | `3` | Generate bounded pair/triple strategy interaction features |
 | `forecast:online_research` | `rolling_window` | `100` | Matured predictions retained in the rolling score |
 | `forecast:online_research` | `min_trust_samples` | `50` | Evidence needed before trust reaches full sample weight |
 | `forecast:online_research` | `buy_probability`, `sell_probability` | `0.56`, `0.44` | Probability gates for research BUY and SELL classifications |

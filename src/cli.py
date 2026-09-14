@@ -321,7 +321,7 @@ def dashboard(
     ),
     workers: int | None = typer.Option(None, help="CPU workers (-1 = all available CPUs; default from config)"),
     learn: bool = typer.Option(True, "--learn/--no-learn", help="Update instrument models as candles close"),
-    view: str = typer.Option("research", help="Initial panel: research, costs, indicators, ai, or prediction"),
+    view: str = typer.Option("ai", help="Initial panel: research, costs, indicators, ai, or prediction"),
 ) -> None:
     """Run the dashboard: call, index and put, with the next three candles projected."""
     settings = _settings()

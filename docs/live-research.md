@@ -11,8 +11,9 @@ niftypulse research --section ai --limit 100
 In this checkout the executable is `.venv/bin/niftypulse` if the virtual
 environment is not activated. A terminal around 180 columns × 44 rows gives the
 charts and rule explanations enough room. Use `1` for results, `2` for position
-scenarios, `3` for indicators, `4` for online AI, `j`/`k` to scroll strategies,
-`r` to refresh projections, and `q` to exit.
+scenarios, `3` for indicators, `4` for online AI, `5` for prediction graphs,
+`j`/`k` to scroll strategies, `r` to refresh projections, and `q` to exit. The
+online AI scorecard is visible by default.
 
 ## Authentication and market data
 
@@ -80,15 +81,23 @@ directory. Sample counts include warm-up; **new labels** counts only updates
 made during this run. Existing batch models remain a separate research facility
 through `train`, `models`, and `backtest`; option engines do not use index models.
 
-Alongside that return learner, the `forecast:online_research` plugin runs five
+Alongside that return learner, the `forecast:online_research` plugin runs six
 prequential classifiers: online logistic regression, passive-aggressive
 classification, online Gaussian Naive Bayes, sparse adaptive FTRL-Proximal, and
-a bounded recency-weighted KNN for nonlinear local regimes. Each gets its own immutable
+a bounded recency-weighted KNN for nonlinear local regimes. The sixth is a
+strategy-combination learner that evaluates bounded singles, pairs, and triples
+of the strongest active strategy directions. Each gets its own immutable
 prediction at one-, two-, and three-bar horizons. The plugin learns only after
 the exact target closes and stores its model state and ledger in one SQLite
 transaction under `data/research/online_ai/{live|simulation}/`.
 Every learner's parameters are editable in
 `config/plugins/forecast/online_research.yaml`.
+
+At startup, the first live prediction is issued immediately from the warmed
+technical and strategy state. At each exact target close, success/failure and
+net outcome are recorded, the learners update, and the next prediction receives
+the latest per-strategy accuracy and trust. This path never requires the batch
+`train` command.
 
 The AI scorecard retains all-time and rolling accuracy, majority-baseline lift,
 Brier score, calibration error, wins, losses, gross/cost/net P&L, profit, loss,

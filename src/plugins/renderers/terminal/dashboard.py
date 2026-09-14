@@ -65,7 +65,10 @@ class TerminalRenderer:
         self.bottom_height = max(int(bottom_height), 6)
         self.show_model_diagnostics = bool(show_model_diagnostics)
         self._live = None
-        self.view = "research"
+        # Realtime learning is the default view. Historical projection results
+        # remain one key away, but a user should not have to discover key 4 to
+        # see that the system is auto-training and how it is performing.
+        self.view = "ai"
         self.strategy_offset = 0
 
     # ------------------------------------------------------------- composition
