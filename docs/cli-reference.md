@@ -157,6 +157,10 @@ traded.
 | `--workers` | configured | CPU workers; `-1` uses all available CPUs |
 | `--learn / --no-learn` | on | Update per-instrument online return learners |
 | `--view` | `ai` | Initial panel: `research`, `costs`, `indicators`, `ai`, or `prediction` |
+| `--web` | off | Render through the local Flask browser dashboard |
+| `--web-host` | plugin config | Override the web bind host |
+| `--web-port` | plugin config | Override the web bind port |
+| `--open-browser / --no-open-browser` | on | Open the browser automatically in web mode |
 
 Offline, the feed is **paced against the wall clock** — a one-minute bar takes a
 minute — so the projected candles have seconds to move in. `--speed 60` makes a
@@ -165,7 +169,9 @@ minute take a second.
 With credentials it recovers the local tape, fills only missing history, then
 streams the live WebSocket and records ticks and chain samples while it runs.
 Keys `1`–`5` select results, positions, indicators, AI and prediction graphs;
-`j`/`k` scroll the strategy grid. See [Dashboard](dashboard.md).
+`j`/`k` scroll the strategy grid in terminal mode. Web mode shows all views at
+once at `http://127.0.0.1:5050`; `Ctrl+C` in the owning terminal stops it. See
+[Dashboard](dashboard.md).
 
 ---
 

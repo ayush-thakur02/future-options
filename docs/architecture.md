@@ -40,14 +40,16 @@ src/
 │   ├── advisory/
 │   │   ├── breakeven_gate/  does the move pay for the position?
 │   │   └── performance_ledger/ strategy accuracy, P&L, drawdown and trust
-│   └── renderers/terminal/             charts, panels, the board, the live loop
+│   └── renderers/
+│       ├── terminal/       Rich charts, panels, the board, terminal controls
+│       └── web/            Flask snapshot API, canvas charts, browser terminal
 ├── runtime/            session, engine, board, nowcast, conviction, bars
 ├── backtest/           costs, engine, report
 └── cli.py
 ```
 
 `niftypulse plugins` prints what is actually registered, with capabilities:
-**21 bundled plugins, 43 capabilities**.
+**22 bundled plugins, 44 capabilities**.
 
 ---
 
@@ -88,8 +90,8 @@ src/
                  └────────────────┬─────────────────┘
                                   │
                  ┌────────────────▼─────────────────┐
-                 │ renderer:terminal                │
-                 │ three charts, verdicts, greeks   │
+                 │ renderer:terminal or renderer:web│
+                 │ charts, verdicts, greeks, scores │
                  └──────────────────────────────────┘
 ```
 

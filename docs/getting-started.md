@@ -37,6 +37,7 @@ uv run niftypulse sync --offline --days 120    # generate and store history
 uv run niftypulse train                        # train the scalping horizons
 uv run niftypulse snapshot                     # one frame of the board, then exit
 uv run niftypulse dashboard --offline --speed 60
+uv run niftypulse dashboard --web --offline --speed 60
 ```
 
 `snapshot` is the fastest way to see the whole thing work: it prints one
@@ -73,6 +74,7 @@ uv run niftypulse sync --days 400          # pull everything the account can giv
 uv run niftypulse data                     # what is now stored, without a network call
 uv run niftypulse train                    # train on real bars
 uv run niftypulse dashboard                # live: websocket feed, recording as it goes
+uv run niftypulse dashboard --web          # live: browser opens on localhost:5050
 ```
 
 `sync` checks the cache first and requests only the missing tail, so running it
@@ -106,6 +108,10 @@ for each instrument/horizon. Press `2` for the premium-scalping cost calculation
 strategies, or `1` to return to research. `q` exits. Historical warm-up
 samples are shown separately from live wins and misses. See
 [Live research](live-research.md) for the scoring and learning definitions.
+
+With `--web`, all of these views appear together in a responsive black monospace
+browser terminal. The printed local URL stays live until you press `Ctrl+C` in
+the command terminal. Use `--no-open-browser` when running headlessly.
 
 The legacy advisory calculations, available for separate research, use:
 

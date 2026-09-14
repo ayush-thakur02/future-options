@@ -8,7 +8,8 @@ target bar closes.
 
 The live board records first-issued forecasts, then measures wins, misses and
 price error as target candles close. Start with `niftypulse doctor --live` and
-`niftypulse dashboard --workers -1`. Press `1` for research, `2` for positions,
+`niftypulse dashboard --web --workers -1` for the local browser terminal, or omit
+`--web` for the native terminal UI. Press `1` for research, `2` for positions,
 `3` for indicators, `4` for AI, `5` for prediction graphs, `j`/`k` to scroll
 strategy rows, and `q` to exit.
 The realtime AI scorecard is the default view; no `niftypulse train` step is
@@ -104,6 +105,8 @@ uv run niftypulse doctor                  # check environment and credentials
 uv run niftypulse fetch --days 180        # download 1-minute history
 uv run niftypulse train                   # train the scalping horizons
 uv run niftypulse dashboard               # live terminal dashboard
+uv run niftypulse dashboard --web         # live browser dashboard (Flask)
+uv run niftypulse dashboard --web --offline --speed 60  # local demo
 
 uv run niftypulse strategies              # list strategies and how often they fire
 uv run niftypulse models                  # list trained artifacts and metrics

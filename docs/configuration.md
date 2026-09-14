@@ -190,6 +190,15 @@ tree.
 | `renderer:terminal` | `refresh` | `1.0` | Seconds between frames |
 | `renderer:terminal` | `chart_ratio`, panel heights | see YAML | Single-view layout sizing |
 | `renderer:terminal` | `show_model_diagnostics` | `true` | Show the agreement/range prediction card |
+| `renderer:web` | `host`, `port` | `127.0.0.1`, `5050` | Flask bind address for `dashboard --web` |
+| `renderer:web` | `refresh_ms` | `1000` | Browser snapshot polling interval |
+| `renderer:web` | `open_browser` | `true` | Open the local URL when the renderer starts |
+| `renderer:web` | `max_candles` | `160` | Maximum printed candles sent per instrument |
+
+`--web-host`, `--web-port`, and `--no-open-browser` override the corresponding
+web renderer settings for one dashboard run. Keep the default loopback host unless
+you intentionally want the unauthenticated, read-only view reachable from a
+trusted network.
 
 ---
 

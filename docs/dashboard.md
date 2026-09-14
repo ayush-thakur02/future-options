@@ -1,15 +1,51 @@
 # Dashboard
 
-Two layouts, one clock. The **board** puts the call and the put beside the index;
+The same live session can render as a native terminal screen or a local Flask web
+dashboard. The **board** puts the call and the put beside the index;
 `--no-legs` gives the single-instrument view with the strategy and forecast panels
 where the chart space was.
 
 ```bash
 niftypulse dashboard                  # live websocket, board, recording as it runs
+niftypulse dashboard --web            # same session at http://127.0.0.1:5050
+niftypulse dashboard --web --offline --speed 60
 niftypulse dashboard --offline --speed 60
 niftypulse dashboard --no-legs --refresh 0.25
 niftypulse snapshot                   # one frame to stdout, then exit
 ```
+
+---
+
+## Web terminal
+
+`dashboard --web` starts the Flask renderer after history and the online learners
+are warm, opens the default browser, and keeps the terminal process as the owner
+of the market session. Press `Ctrl+C` in that terminal to stop the feed and web
+server. Use `--no-open-browser` on a headless machine and open the printed URL
+yourself.
+
+The browser is a black, responsive, monospace research terminal. It polls the
+local snapshot API and shows:
+
+- native canvas candlestick graphs for index, call, and put, with blue projected
+  candles on the same price scale as printed candles;
+- current per-leg AI action, probability, confidence, trust, Greeks, verdict,
+  projection path, and price movement;
+- realtime learner sample counts, hit/miss results, all-time and rolling accuracy,
+  net basis points, drawdown, and trust;
+- the live prediction matrix, searchable strategy states, indicator readings,
+  frozen forward-score results, feed freshness, queues, and cost assumptions.
+
+The server is read-only and defaults to `127.0.0.1:5050`. Binding it to the
+network is explicit:
+
+```bash
+niftypulse dashboard --web --web-host 0.0.0.0 --web-port 8080 --no-open-browser
+```
+
+Only do that on a trusted network; Flask adds no authentication to this local
+research view. The bind defaults and candle history limit live in
+`config/plugins/renderer/web.yaml`.
 
 ---
 
