@@ -9,6 +9,7 @@ wall clock instead of running as fast as the CPU allows.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -362,6 +363,56 @@ def test_session_drives_a_simulated_feed(offline_session) -> None:
     feed = offline_session._build_feed()
     assert isinstance(feed, SimulatedFeed)
     assert feed.speed == offline_session.config.speed
+
+
+class RecordingRenderer:
+    """A renderer that draws only inside its live block, like the terminal one.
+
+    Which is the whole point: ``live_update`` outside ``live()`` is a documented
+    no-op, so a frame pushed there is a frame nobody ever sees.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.in_live_block = False
+
+    @contextmanager
+    def live(self):
+        self.in_live_block = True
+        self.events.append("live")
+        try:
+            yield
+        finally:
+            self.in_live_block = False
+            self.events.append("closed")
+
+    def live_update(self, snapshot, status: str = "") -> None:
+        self.events.append("draw" if self.in_live_block else "draw-outside-live")
+
+
+async def test_the_render_loop_draws_inside_the_live_block(offline_session) -> None:
+    """The loop has to open the block, or the dashboard never appears at all.
+
+    It took the screen, pushed a frame a second into a renderer that was not
+    drawing, and left the terminal on its own bootstrap output — a running
+    process with a blank screen, which is indistinguishable from a hang.
+    """
+    renderer = RecordingRenderer()
+    session = Session(
+        kernel=offline_session.kernel,
+        config=SessionConfig(offline=True, days=2, refresh=0.05),
+    )
+    session.renderer = renderer
+
+    task = asyncio.create_task(session._render_loop())
+    await asyncio.sleep(0.2)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert renderer.events[0] == "live", "the block must open before the first frame"
+    assert "draw" in renderer.events
+    assert "draw-outside-live" not in renderer.events
+    assert renderer.events[-1] == "closed", "the screen must be handed back"
 
 
 def test_session_uses_the_broker_when_it_can() -> None:

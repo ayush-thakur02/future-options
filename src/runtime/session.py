@@ -320,15 +320,23 @@ class Session:
             self.engine.status = f"feed error: {str(payload.get('error', ''))[:40]}"
 
     async def _render_loop(self) -> None:
-        """Redraw at the renderer's cadence; the projection keeps its own."""
+        """Redraw at the renderer's cadence; the projection keeps its own.
+
+        Inside the renderer's live block, which is what takes the screen. A
+        renderer draws nothing outside one — its ``live_update`` is a no-op until
+        the block is open — so a loop that pushed frames without it ran happily
+        behind a screen it never took, and the dashboard sat on its bootstrap
+        output looking hung.
+        """
         renderer = self.renderer
         interval = max(float(self.config.refresh), 0.05)
-        try:
-            while True:
-                renderer.live_update(self.engine.snapshot(), self.engine.status)
-                await asyncio.sleep(interval)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
+        with renderer.live():
+            try:
+                while True:
+                    renderer.live_update(self.engine.snapshot(), self.engine.status)
+                    await asyncio.sleep(interval)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
 
     # ------------------------------------------------------------------ replay
 

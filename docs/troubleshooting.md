@@ -290,6 +290,16 @@ No `option_chain` capability is registered, or `--no-legs` was passed. Check wit
 `niftypulse plugins --capabilities`. Without it the board shows the index alone
 rather than failing.
 
+### The dashboard prints its startup lines and then nothing
+
+A bug, fixed: the session pushed a frame a second into the renderer without ever
+opening its live block, and `live_update` draws nothing outside one. The whole
+platform was running — feed, projection clock, strategies — behind a screen it
+had never taken, which is why it read as a hang rather than as a crash. The render
+loop now opens the block, and
+`tests/test_runtime.py::test_the_render_loop_draws_inside_the_live_block` fails
+against the old version.
+
 ### The dashboard exits immediately
 
 Terminal too small. The layout needs roughly 24 rows and 60 columns. Resize, or
