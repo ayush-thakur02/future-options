@@ -281,7 +281,22 @@ def test_bar_loader_generates_and_stores_when_offline_with_nothing_cached(settin
     loaded = loader.load_offline(days=3, quiet=True)
 
     assert not loaded.empty
-    assert loader.kernel.capability("history").store.row_count() == len(loaded)
+    history = loader.kernel.capability("history")
+    assert history.store.row_count() == 0
+    assert history.simulation_store.row_count() == len(loaded)
+
+
+def test_live_history_replaces_an_unknown_legacy_cache(settings, bars) -> None:
+    source = HistorySource(settings)
+    source.store.replace(bars)
+    replacement = generate_candles(days=2, seed=555)
+    broker = FakeBroker(rest=FakeREST(frame=replacement))
+
+    loaded = HistorySource(settings, broker=broker).load_history(days=5, quiet=True)
+
+    assert len(loaded) == len(replacement)
+    entry = source.store.manifest.dataset(source.store.dataset, source.store.key)
+    assert "broker" in entry["sources"]
 
 
 def test_bar_loader_prefers_the_cache_over_generating(settings, bars) -> None:

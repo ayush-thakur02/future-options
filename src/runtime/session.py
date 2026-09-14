@@ -126,16 +126,18 @@ class Session:
 
         report("loading bars")
         if self.live:
-            # Fetch a clean live warm-up. Older versions seeded simulated bars in
-            # the shared cache, so its provenance cannot be trusted for learning.
-            from core.bars import normalize_candles
             from core.calendar import IST
             from plugins.sources.history.resample import resample_ohlcv
 
-            rest = self.broker.rest()
-            history = rest.fetch_minute_history(self.kernel.settings.instrument_key, days=self.config.days)
-            today = rest.fetch_intraday(self.kernel.settings.instrument_key, "minutes", 1)
-            bars = resample_ohlcv(normalize_candles(pd.concat([history, today])), self.kernel.settings.bar_minutes)
+            # The history plugin materializes the local WebSocket tape first and
+            # asks REST only for coverage that is still absent.
+            bars = self.loader.load(
+                days=self.config.days,
+                refresh=self.config.refresh_history,
+                quiet=False,
+                offline=False,
+            )
+            bars = resample_ohlcv(bars, self.kernel.settings.bar_minutes)
             cutoff = pd.Timestamp.now(tz=IST) - pd.Timedelta(minutes=self.kernel.settings.bar_minutes)
             bars = bars[bars.index <= cutoff]
             if bars.empty:
@@ -444,6 +446,12 @@ class Session:
                         return
                     if key in {"1", "2", "3"}:
                         renderer.view = {"1": "research", "2": "costs", "3": "indicators"}[key]
+                    if key == "4":
+                        renderer.view = "ai"
+                    if key.lower() == "j":
+                        renderer.scroll_strategies(1)
+                    if key.lower() == "k":
+                        renderer.scroll_strategies(-1)
                     if key.lower() == "r":
                         target = self.board if self.board is not None else self.engine
                         await asyncio.to_thread(target.refresh_projection)

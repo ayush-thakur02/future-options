@@ -44,8 +44,8 @@ class BarLoader:
         """Bars for the session, with the fallback chain made explicit.
 
         Online: the cache, topped up from the provider.
-        Offline, or no credentials: the cache if it holds anything, otherwise a
-        generated series which is then cached so the next run is reproducible.
+        Offline, or no credentials: the live cache if it holds anything,
+        otherwise a separately keyed generated series.
         """
         history = self.kernel.capability("history")
 
@@ -61,17 +61,22 @@ class BarLoader:
         return self.load_offline(days=days, quiet=quiet)
 
     def load_offline(self, days: int = 120, quiet: bool = False) -> pd.DataFrame:
-        """Cached bars if any, otherwise generated and cached."""
+        """Real cached bars if any, otherwise a separate simulation cache."""
         history = self.kernel.capability("history")
         cached = history.load_cached()
         if not cached.empty:
             self._warn(quiet, f"using {len(cached):,} cached bars")
             return cached
 
+        simulated = history.load_simulation()
+        if not simulated.empty:
+            self._warn(quiet, f"using {len(simulated):,} cached simulation bars")
+            return simulated
+
         market = self.kernel.build("source:simulated", days=days)
         self._warn(quiet, f"generating {days} sessions of synthetic bars")
         frame = market.candles(days=days)
-        return history.seed(frame)
+        return history.seed_simulation(frame)
 
     def _warn(self, quiet: bool, message: str) -> None:
         if not quiet:

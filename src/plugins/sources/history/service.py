@@ -49,6 +49,11 @@ class HistorySource:
         # first use is the difference between a migration and a disappearance.
         self.store.migrate_legacy()
         self.archive = RealtimeArchive(settings.data_dir, settings.instrument_key)
+        self.simulation_store = PartitionedStore(
+            settings.data_dir,
+            f"SIMULATION|{settings.instrument_key}",
+            bar_minutes=settings.bar_minutes,
+        )
 
     # ------------------------------------------------------------- credentials
 
@@ -96,6 +101,11 @@ class HistorySource:
         self.settings.ensure_dirs()
 
         cached = self.load_cached()
+        if self.can_fetch and not self._trusted_live_cache():
+            # Older releases could write generated candles under the live key.
+            # Unknown provenance is fetched once and replaced; subsequent runs
+            # use the broker/WebSocket provenance stored in the manifest.
+            cached = cached.iloc[0:0]
         if self.offline or not self.access_token:
             if not cached.empty and not quiet:
                 print(f"Using {len(cached):,} cached bars from {self.store.base}")
@@ -108,7 +118,14 @@ class HistorySource:
 
     def _merge_fetched(self, fetched: pd.DataFrame) -> pd.DataFrame:
         """Store what was fetched and return everything the store now holds."""
-        self.store.write(fetched)
+        if fetched.empty and not self._trusted_live_cache():
+            return fetched
+        if not fetched.empty:
+            if self._trusted_live_cache():
+                self.store.write(fetched)
+            else:
+                self.store.replace(fetched)
+            self._mark_source(self.store, "broker")
         return self.store.load()
 
     def seed(self, frame: pd.DataFrame) -> pd.DataFrame:
@@ -119,7 +136,27 @@ class HistorySource:
         """
         self.settings.ensure_dirs()
         self.store.replace(frame)
+        self._mark_source(self.store, "manual")
         return frame
+
+    def load_simulation(self) -> pd.DataFrame:
+        return self.simulation_store.load()
+
+    def seed_simulation(self, frame: pd.DataFrame) -> pd.DataFrame:
+        self.settings.ensure_dirs()
+        self.simulation_store.replace(frame)
+        self._mark_source(self.simulation_store, "simulation")
+        return frame
+
+    def _trusted_live_cache(self) -> bool:
+        entry = self.store.manifest.dataset(self.store.dataset, self.store.key)
+        return bool(set(entry.get("sources", [])) & {"broker", "websocket", "manual"})
+
+    @staticmethod
+    def _mark_source(store: PartitionedStore, source: str) -> None:
+        entry = store.manifest.dataset(store.dataset, store.key)
+        sources = sorted(set(entry.get("sources", [])) | {source})
+        store.manifest.update(store.dataset, store.key, sources=sources)
 
     def _load_and_refresh(self, cached: pd.DataFrame, days: int, quiet: bool) -> pd.DataFrame:
         now = pd.Timestamp.now(tz=IST)

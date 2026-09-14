@@ -54,6 +54,7 @@ class TerminalRenderer:
         self.console = console or Console()
         self._live = None
         self.view = "research"
+        self.strategy_offset = 0
 
     # ------------------------------------------------------------- composition
 
@@ -135,10 +136,18 @@ class TerminalRenderer:
             )
         spot_leg = board.spot_leg
         layout["strategies"].update(
-            board_panels.scalp_costs(board) if self.view == "costs" else board_panels.strategy_matrix(board)
+            board_panels.scalp_costs(board)
+            if self.view == "costs"
+            else board_panels.strategy_matrix(
+                board, offset=self.strategy_offset, limit=max(bottom - 5, 1)
+            )
         )
         layout["indicators"].update(
-            panels.indicators(spot_leg.snapshot) if self.view == "indicators" and spot_leg else board_panels.research_scores(board)
+            board_panels.ai_scores(board)
+            if self.view == "ai"
+            else panels.indicators(spot_leg.snapshot)
+            if self.view == "indicators" and spot_leg
+            else board_panels.research_scores(board)
         )
         layout["footer"].update(board_panels.board_footer(board, status))
         return layout
@@ -184,6 +193,9 @@ class TerminalRenderer:
             self._live.update(self.build_board(snapshot, status), refresh=True)
         else:
             self._live.update(self.build(snapshot, status), refresh=True)
+
+    def scroll_strategies(self, delta: int) -> None:
+        self.strategy_offset = max(0, self.strategy_offset + int(delta))
 
     def _blank(self):
         from rich.console import Group

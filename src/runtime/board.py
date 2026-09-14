@@ -127,7 +127,8 @@ class MarketBoard:
             def warm(item):
                 kind, contract = item
                 engine = Engine(self.kernel, bar_minutes=self.bar_minutes, symbol=contract.symbol,
-                                instrument_key=contract.instrument_key, source="Upstox")
+                                instrument_key=contract.instrument_key, source="Upstox",
+                                anchor_provider=index_engine.aligned_close)
                 engine.bootstrap(history=contract.bars)
                 return BoardLeg(label="CALL" if kind == "CE" else "PUT", kind=kind,
                                 engine=engine, strike=contract.strike, step=self.source.strike_step,
@@ -164,6 +165,7 @@ class MarketBoard:
             bar_minutes=self.bar_minutes,
             symbol=f"{self.settings.symbol} {chain_leg.strike:,.0f} {kind}",
             instrument_key=f"SIM|{self.settings.symbol}:{chain_leg.strike}:{kind}:{self.expiry}",
+            anchor_provider=self.index_engine.aligned_close,
         ).bootstrap(history=chain_leg.bars)
 
         return BoardLeg(

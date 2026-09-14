@@ -327,8 +327,8 @@ def dashboard(
     settings = _settings()
     if timeframe < 1 or bars_ahead < 1 or refresh <= 0 or nowcast <= 0 or speed <= 0:
         raise typer.BadParameter("Timeframe, bars ahead, refresh, nowcast and speed must be positive.")
-    if view not in {"research", "costs", "indicators"}:
-        raise typer.BadParameter("View must be research, costs or indicators.")
+    if view not in {"research", "costs", "indicators", "ai"}:
+        raise typer.BadParameter("View must be research, costs, indicators or ai.")
     if workers is not None:
         settings.workers = workers
     settings.online_learning = learn

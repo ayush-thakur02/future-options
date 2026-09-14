@@ -202,10 +202,10 @@ def test_opening_range_waits_until_price_leaves_the_range():
     assert (result.iloc[:-1] == 0).all()
 
 
-def test_engine_shows_ten_rules_and_disables_index_volume_claims(history, tmp_path):
+def test_engine_shows_every_plugin_rule_and_disables_index_volume_claims(history, tmp_path):
     settings = Settings(model_dir=tmp_path, data_dir=tmp_path)
     engine = Engine(Kernel.bootstrap(settings)).bootstrap(history)
-    assert len(engine.signals) == 10
+    assert len(engine.signals) == len(engine.catalog) == 30
     assert next(s for s in engine.signals if s.strategy == "vwap_reversion").meta["state"] == "N/A"
     assert next(s for s in engine.signals if s.strategy == "order_flow").meta["state"] == "N/A"
     assert engine.forecaster.tracker.overall().scored == 0

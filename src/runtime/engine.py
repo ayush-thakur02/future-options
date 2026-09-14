@@ -23,6 +23,7 @@ and simulated runs are the same object driven by different sources.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -44,10 +45,6 @@ FEATURE_WINDOW = 2000
 # Bars handed to the strategy layer. Strategies look back at most ~100 bars, so
 # evaluating all of them across the full feature window is wasted work.
 SIGNAL_WINDOW = 600
-# Named in the signal panel. More than a handful is unreadable, and these are the
-# ones whose disagreement with the ensemble is worth seeing.
-HIGHLIGHTED = ("ema_trend", "supertrend", "donchian_breakout", "orb", "macd_momentum",
-               "rsi_reversion", "bollinger_reversion", "vwap_reversion", "squeeze_release", "order_flow")
 # Bars the projection needs before it will draw anything. Two bars of history
 # would produce a path, just not a meaningful one.
 MIN_PROJECTION_BARS = 15
@@ -76,12 +73,14 @@ class Engine:
         forecaster=None,
         instrument_key: str | None = None,
         source: str = "simulation",
+        anchor_provider: Callable[[], pd.Series] | None = None,
     ) -> None:
         self.kernel = kernel
         self._lock = RLock()
         self.settings = kernel.settings
         self.instrument_key = instrument_key or self.settings.instrument_key
         self.source = source
+        self.anchor_provider = anchor_provider
         self.last_tick_ts = None
         self.last_quote_ts = None
         self.market_status = None
@@ -89,9 +88,11 @@ class Engine:
         self.rejected_ticks = 0
         self.spread = 0.0
         self.online = OnlineLearner(bar_minutes or self.settings.bar_minutes) if self.settings.online_learning else None
-        self._rule_pending = {}
         self.rule_stats = {}
         self._latest_scores = {}
+        self.ai_signals = {}
+        self.online_lab = None
+        self.performance = None
         self.symbol = symbol or kernel.settings.symbol
         self.bar_minutes = bar_minutes or kernel.settings.bar_minutes
         self.calendar = calendar or TradingCalendar()
@@ -107,7 +108,7 @@ class Engine:
         self.predictor = kernel.capability("forecast") if (self.instrument_key == self.settings.instrument_key
             and kernel.registry.capabilities().get("forecast")) else None
         self.catalog = StrategyCatalog.from_kernel(kernel)
-        self.strategy = strategy or self.catalog.ensemble(weights={name: 1.0 for name in HIGHLIGHTED})
+        self.strategy = strategy or self.catalog.ensemble()
         self.aggregator = kernel.build(
             "aggregator:candle_builder", bar_minutes=self.bar_minutes
         )
@@ -205,8 +206,8 @@ class Engine:
             return False
 
         self._append_closed_bar(closed)
-        self._score_rules(closed)
-        self._recompute()
+        self._observe_research(closed)
+        self._recompute(issue_research=True)
         if self.online is not None:
             self.online.update(self.history, self.features)
             self.online.save()
@@ -230,7 +231,7 @@ class Engine:
 
     # -------------------------------------------------------------- features
 
-    def _recompute(self) -> None:
+    def _recompute(self, issue_research: bool = False) -> None:
         """Rebuild features, strategy signals, and forecasts from current state."""
         if len(self.history) < 60:
             self.status = "warming up"
@@ -243,11 +244,19 @@ class Engine:
             self.status = f"feature error: {exc}"
             return
 
-        context = StrategyContext(bars=self.history, features=self.features)
+        context = StrategyContext(
+            bars=self.history,
+            features=self.features,
+            extras=self._strategy_extras(),
+        )
         self.signals = self._collect_signals(context)
+        if issue_research:
+            self._issue_research()
         self.predictions = self._collect_predictions()
         self.regime = self._current_regime()
-        self.slow_conviction = self._ensemble_view(context)
+        rule_view = self._ensemble_view(context)
+        ai_view = self._ai_view()
+        self.slow_conviction = 0.75 * rule_view + 0.25 * ai_view
         self.status = "live"
         self.compute_ms = (time.perf_counter() - started) * 1000
 
@@ -258,7 +267,7 @@ class Engine:
         # bounded tail rather than the whole feature window. The indicators they
         # consume are already computed over full history, and the longest
         # lookback any strategy applies internally is about 100 bars. Without
-        # this, evaluating all 24 strategies across 2000 bars dominated the live
+        # this, evaluating all strategies across 2000 bars dominated the live
         # loop and made the offline replay unwatchable.
         if len(context.features) > self.signal_window:
             context = StrategyContext(
@@ -268,17 +277,23 @@ class Engine:
             )
 
         self._latest_scores = {}
-        for name in HIGHLIGHTED:
+        for rule in self.catalog.all():
+            name = rule.name
             state = "WAIT"
             value = 0.0
             reason = "conditions not met"
             try:
-                rule = self.catalog.get(name)
-                volume_ok = "volume" in context.bars and context.bars["volume"].tail(30).fillna(0).sum() > 0
+                volume_ok = any(
+                    column in context.bars
+                    and context.bars[column].tail(30).fillna(0).abs().sum() > 0
+                    for column in ("volume", "tick_count")
+                )
                 depth_ok = any(k in context.features and context.features[k].tail(30).abs().sum() > 0
                                for k in ("depth_imbalance", "depth_imbalance_ma"))
-                if name == "vwap_reversion" and not volume_ok:
-                    state, reason = "N/A", "No traded volume; VWAP unavailable"
+                if rule.category == "statistical" and not context.extras:
+                    state, reason = "N/A", "No aligned anchor instrument"
+                elif name in {"vwap_reversion", "chaikin_flow_trend", "money_flow_reversal", "obv_divergence"} and not volume_ok:
+                    state, reason = "N/A", "No volume or tick activity"
                 elif name == "order_flow" and not depth_ok:
                     state, reason = "N/A", "No order-book depth"
                 else:
@@ -289,23 +304,90 @@ class Engine:
             except Exception as exc:
                 state, reason = "ERROR", f"{type(exc).__name__}: rule inputs unavailable"
             self._latest_scores[name] = value
-            measured = self.rule_stats.get(name, {"scored": 0, "hits": 0})
+            measured = self.rule_stats.get(name, {"scored": 0, "hits": 0, "trust_score": 0.0})
             signals.append(Signal(ts=self.history.index[-1].to_pydatetime(), strategy=name,
                                   direction=Direction.from_value(value, 0.15), strength=abs(value),
                                   reason=reason, meta={"state": state, **measured}))
         return signals
 
-    def _score_rules(self, bar: dict) -> None:
-        stamp = pd.Timestamp(bar["ts"])
-        for target in list(self._rule_pending):
-            records = self._rule_pending.pop(target) if target <= stamp else []
-            if target != stamp:
-                continue
-            for signal, anchor in records:
-                hit = Direction.from_value(float(bar["close"]) / anchor - 1, 0.00001) == signal.direction
-                stat = self.rule_stats.setdefault(signal.strategy, {"scored": 0, "hits": 0})
-                stat["scored"] += 1
-                stat["hits"] += int(hit)
+    def _strategy_extras(self) -> dict:
+        if self.anchor_provider is None:
+            return {}
+        try:
+            anchor = self.anchor_provider()
+        except Exception:  # noqa: BLE001 — a paired rule can abstain independently
+            return {}
+        return {"anchor_close": anchor} if isinstance(anchor, pd.Series) and not anchor.empty else {}
+
+    def _observe_research(self, bar: dict) -> None:
+        stamp = pd.Timestamp(bar["ts"]).to_pydatetime()
+        close = float(bar["close"])
+        if self.performance is not None:
+            self.performance.observe(timestamp=stamp, price=close, instrument=self.instrument_key)
+            self._refresh_rule_stats()
+        if self.online_lab is not None:
+            self.online_lab.observe(timestamp=stamp, price=close, instrument=self.instrument_key)
+
+    def _issue_research(self) -> None:
+        if self.features.empty or self.history.empty:
+            return
+        stamp = self.history.index[-1].to_pydatetime()
+        anchor = float(self.history["close"].iloc[-1])
+        cost = self._research_cost_bps()
+        if self.performance is not None:
+            self.performance.issue(
+                (signal for signal in self.signals if signal.meta.get("state") == "ACTIVE"),
+                timestamp=stamp,
+                anchor_price=anchor,
+                horizon_min=3 * self.bar_minutes,
+                instrument=self.instrument_key,
+                cost_bps=cost,
+            )
+        if self.online_lab is not None:
+            row = self.features.iloc[-1].to_dict()
+            self.ai_signals = {
+                bars_ahead: self.online_lab.issue(
+                    row,
+                    timestamp=stamp,
+                    anchor_price=anchor,
+                    horizon_min=bars_ahead * self.bar_minutes,
+                    instrument=self.instrument_key,
+                    cost_bps=cost,
+                )
+                for bars_ahead in range(1, 4)
+            }
+
+    def _refresh_rule_stats(self) -> None:
+        if self.performance is None:
+            return
+        self.rule_stats = {
+            card.strategy: {
+                "scored": card.samples,
+                "hits": card.hits,
+                "accuracy": card.accuracy,
+                "wins": card.wins,
+                "losses": card.losses,
+                "net_pnl_bps": card.net_pnl_bps,
+                "drawdown_bps": card.max_drawdown_bps,
+                "trust_score": card.trust_score,
+            }
+            for card in self.performance.scorecards(self.instrument_key)
+        }
+
+    def _research_cost_bps(self) -> float:
+        if self.last_price <= 0:
+            return self.settings.cost_hurdle_bps()
+        if self.instrument_key == self.settings.instrument_key:
+            return self.settings.cost_hurdle_bps()
+        fixed_per_unit = self.settings.option_fixed_cost_rupees / max(self.settings.lot_size, 1)
+        spread_and_fees = self.spread + fixed_per_unit
+        return self.settings.option_variable_cost_bps + spread_and_fees / self.last_price * 10_000
+
+    def _ai_view(self) -> float:
+        signal = self.ai_signals.get(1)
+        if signal is None:
+            return 0.0
+        return (float(signal.p_up) - 0.5) * 2.0 * float(signal.trust_score)
 
     def _collect_predictions(self) -> list[Prediction]:
         if self.predictor is None or not getattr(self.predictor, "is_ready", False):
@@ -404,17 +486,17 @@ class Engine:
         total = weight_sum = 0.0
         for rule, prior in self.strategy.components:
             stat = self.rule_stats.get(rule.name, {})
-            count = stat.get("scored", 0)
-            # Shrunk, bounded weights; small samples cannot dominate the vote.
-            weight = prior * (0.5 + (stat.get("hits", 0) + 5) / (count + 10))
+            # Measured trust may raise a prior by at most 25%; unproven rules
+            # retain 75% so a fresh install can still produce research signals.
+            weight = prior * (0.75 + 0.5 * float(stat.get("trust_score", 0.0)))
             total += self._latest_scores.get(rule.name, 0) * weight
             weight_sum += abs(weight)
-        # Record only live/replay decisions, never historical warm-up successes.
-        if self.tick_count:
-            target = self.history.index[-1] + pd.Timedelta(minutes=3 * self.bar_minutes)
-            self._rule_pending.setdefault(target, [(s, float(self.history["close"].iloc[-1]))
-                for s in self.signals if s.meta.get("state") == "ACTIVE"])
         return total / weight_sum if weight_sum else 0.0
+
+    @synchronized
+    def aligned_close(self) -> pd.Series:
+        """A thread-safe copy for cross-instrument statistical strategies."""
+        return self.history["close"].copy() if "close" in self.history else pd.Series(dtype="float64")
 
     # -------------------------------------------------------------- snapshot
 
@@ -430,7 +512,11 @@ class Engine:
         indicators = {}
         if not self.features.empty:
             last = self.features.iloc[-1]
-            for key in ("rsi_14", "adx_14", "atr_norm", "macd_hist", "stoch_k", "bb_pct_b", "vwap_dist", "efficiency_ratio_10"):
+            for key in (
+                "rsi_14", "adx_14", "atr_norm", "macd_hist", "stoch_k", "bb_pct_b",
+                "vwap_dist", "efficiency_ratio_10", "choppiness_14", "sortino_30",
+                "autocorr_1_50", "variance_ratio_5_60", "direction_entropy_50", "amihud_20",
+            ):
                 if key in self.features.columns:
                     value = last[key]
                     indicators[key] = float(value) if pd.notna(value) else float("nan")
@@ -456,6 +542,8 @@ class Engine:
                       "pending": self.forecaster.tracker.pending if self.forecaster else 0,
                       "missing": self.forecaster.tracker.missed_bars if self.forecaster else 0,
                       "online": self.online.describe() if self.online else {},
+                      "ai": self._ai_snapshot(),
+                      "strategies": list(self.rule_stats.values()),
                       "compute_ms": self.compute_ms, "ticks": self.tick_count, "rejected_ticks": self.rejected_ticks,
                       "spread": self.spread, "fixed_cost_rupees": self.settings.option_fixed_cost_rupees,
                       "variable_cost_bps": self.settings.option_variable_cost_bps,
@@ -477,6 +565,61 @@ class Engine:
                 self.online.save()
             except (OSError, ValueError, EOFError):
                 self.status = "online checkpoint unavailable; learning in memory"
+        capabilities = self.kernel.registry.capabilities()
+        if capabilities.get("online_research") and self.settings.online_learning:
+            identity = hashlib.sha256(
+                f"{self.instrument_key}:{self.bar_minutes}".encode()
+            ).hexdigest()[:24]
+            self.online_lab = self.kernel.new(
+                self.kernel.provider("online_research"),
+                state_path=self.settings.data_dir / "research" / "online_ai" / mode / f"{identity}.sqlite3",
+            )
+        if capabilities.get("strategy_performance"):
+            self.performance = self.kernel.capability("strategy_performance")
+            self._refresh_rule_stats()
+
+    def _ai_snapshot(self) -> dict:
+        if self.online_lab is None:
+            return {}
+        signals = {
+            horizon: {
+                "action": signal.action.value,
+                "p_up": signal.p_up,
+                "confidence": signal.confidence,
+                "trust_score": signal.trust_score,
+                "algorithms": [
+                    {
+                        "name": item.algorithm,
+                        "action": item.action.value,
+                        "p_up": item.p_up,
+                        "confidence": item.confidence,
+                        "trust_score": item.trust_score,
+                    }
+                    for item in signal.predictions
+                ],
+            }
+            for horizon, signal in self.ai_signals.items()
+        }
+        cards = []
+        for card in self.online_lab.scorecards():
+            row = card.as_row()
+            row.update(
+                {
+                    "wins": card.all_time.wins,
+                    "losses": card.all_time.losses,
+                    "profit_bps": card.all_time.profit_bps,
+                    "loss_bps": card.all_time.loss_bps,
+                    "drawdown_bps": card.all_time.max_drawdown_bps,
+                    "rolling_net_pnl_bps": card.rolling.net_pnl_bps,
+                }
+            )
+            cards.append(row)
+        return {
+            "signals": signals,
+            "scorecards": cards,
+            "pending": self.online_lab.pending_count,
+            "expired": self.online_lab.expired_count,
+        }
 
     @synchronized
     def close(self) -> None:
@@ -541,7 +684,6 @@ class Engine:
             if self.forecaster is not None:
                 self.forecaster.tracker.reset()
                 self.forecaster.momentum.reset()
-            self._rule_pending.clear()
             self.rule_stats.clear()
             self.tick_count = 0
             self.last_tick_ts = None

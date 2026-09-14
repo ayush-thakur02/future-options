@@ -197,7 +197,7 @@ def board_footer(board: BoardSnapshot, status: str) -> Text:
     text.append("  next ", style="grey50")
     text.append(f"{legs} bars", style="bright_blue")
     text.append("  │", style="grey35")
-    text.append(" 1 research  2 costs  3 indicators  r refresh  q quit", style="bold white")
+    text.append(" 1 results  2 positions  3 indicators  4 AI  j/k scroll  r refresh  q quit", style="bold white")
     if status:
         text.append("   ")
         text.append(status, style="grey50")
@@ -227,7 +227,9 @@ def research_scores(board: BoardSnapshot) -> Panel:
     return Panel(Group(table, footer), title="[grey62]forward results · frozen forecasts[/]", border_style=PANEL_BORDER)
 
 
-def strategy_matrix(board: BoardSnapshot) -> Panel:
+def strategy_matrix(
+    board: BoardSnapshot, offset: int = 0, limit: int = 10
+) -> Panel:
     table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
     table.add_column("strategy", width=20)
     labels = [label for label in ("INDEX", "CALL", "PUT") if board.leg(label)]
@@ -236,7 +238,10 @@ def strategy_matrix(board: BoardSnapshot) -> Panel:
     table.add_column("index condition / 3-bar hits", ratio=1)
     spot = board.spot_leg
     if spot:
-        for signal in spot.snapshot.signals:
+        signals = spot.snapshot.signals
+        maximum = max(len(signals) - max(limit, 1), 0)
+        offset = min(max(offset, 0), maximum)
+        for signal in signals[offset : offset + max(limit, 1)]:
             cells = []
             for label in labels:
                 leg = board.leg(label)
@@ -245,15 +250,54 @@ def strategy_matrix(board: BoardSnapshot) -> Panel:
                 text = item.direction.value if state == "ACTIVE" else state
                 cells.append(Text(text, style=change_style(item.score) if state == "ACTIVE" else "grey50"))
             n = signal.meta.get("scored", 0)
-            measured = f" · {signal.meta.get('hits', 0)}/{n}" if n else ""
+            measured = (
+                f" · {signal.meta.get('hits', 0)}/{n} · "
+                f"net {signal.meta.get('net_pnl_bps', 0):+.1f}bp · "
+                f"trust {signal.meta.get('trust_score', 0):.0%}"
+                if n
+                else ""
+            )
             table.add_row(signal.strategy, *cells, Text(signal.reason + measured, style="grey62", overflow="ellipsis", no_wrap=True))
-    return Panel(Group(table, Text(" Rules + tape ≥75% · online model ≤25% · WAIT = no setup", style="grey62")),
-                 title="[grey62]10 trader rules · independent views[/]", border_style=PANEL_BORDER)
+        position = f"{offset + 1}-{min(offset + limit, len(signals))}/{len(signals)}"
+    else:
+        position = "0/0"
+    return Panel(Group(table, Text(f" {position} · j/k scroll · WAIT = no setup", style="grey62")),
+                 title="[grey62]plugin strategies · independent views[/]", border_style=PANEL_BORDER)
+
+
+def ai_scores(board: BoardSnapshot) -> Panel:
+    table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
+    for name in ("leg", "algorithm", "n", "acc", "roll", "net bp", "DD", "trust"):
+        table.add_column(name, justify="left" if name in {"leg", "algorithm"} else "right")
+    signal_lines = []
+    for leg in board.legs:
+        ai = leg.snapshot.research.get("ai", {})
+        for index, card in enumerate(ai.get("scorecards", [])):
+            table.add_row(
+                leg.label if index == 0 else "",
+                card["algorithm"],
+                str(card["samples"]),
+                f"{card['accuracy']:.1%}" if card["samples"] else "—",
+                f"{card['rolling_accuracy']:.1%}" if card["samples"] else "—",
+                f"{card['net_pnl_bps']:+.1f}",
+                f"{card.get('drawdown_bps', 0):.1f}",
+                f"{card['trust_score']:.0%}",
+            )
+        signals = ai.get("signals", {})
+        if signals:
+            views = " ".join(
+                f"+{h}:{item['action']} {item['p_up']:.2f}/{item['trust_score']:.0%}"
+                for h, item in sorted(signals.items())
+            )
+            signal_lines.append(f"{leg.label} {views}")
+    footer = Text("\n".join(signal_lines) if signal_lines else "Waiting for the next completed bar", style="grey62")
+    footer.append("\nResearch signals only · probability/trust · no orders are placed", style="bright_yellow")
+    return Panel(Group(table, footer), title="[grey62]online AI · prequential scorecards[/]", border_style=PANEL_BORDER)
 
 
 def scalp_costs(board: BoardSnapshot) -> Panel:
     table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
-    for label in ("leg / lot", "3-bar Δ ₹", "cost ₹/unit", "net ₹/lot", "read"):
+    for label in ("leg / lot", "+bar", "AI", "gross ₹", "cost ₹/unit", "net ₹/lot", "read"):
         table.add_column(label)
     for leg in board.option_legs():
         snap = leg.snapshot
@@ -261,18 +305,35 @@ def scalp_costs(board: BoardSnapshot) -> Panel:
         if not quantity or not snap.projections:
             table.add_row(leg.label, "—", "—", "—", "waiting for contract / forecast")
             continue
-        gross = snap.projections[-1].close - snap.last_price
         cost = (snap.research.get("fixed_cost_rupees", 40) / quantity
                 + snap.last_price * snap.research.get("variable_cost_bps", 25) / 10_000
                 + snap.research.get("spread", 0))
-        net = (gross - cost) * quantity
-        table.add_row(f"{leg.label} / {quantity}", f"{gross:+.2f}", f"{cost:.2f}",
-                      Text(f"{net:+.2f}", style=change_style(net)), "estimated edge" if net > 0 else "below cost")
-    note = Text(" Long premium scalps: resale minus entry minus estimated costs.\n"
+        ai = snap.research.get("ai", {}).get("signals", {})
+        for horizon, projected in enumerate(snap.projections, start=1):
+            action = ai.get(horizon, {}).get("action", "HOLD")
+            position = 1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0
+            gross = position * (projected.close - snap.last_price)
+            net = (gross - cost) * quantity if position else 0.0
+            table.add_row(
+                f"{leg.label} / {quantity}" if horizon == 1 else "",
+                str(horizon), action, f"{gross:+.2f}" if position else "—", f"{cost:.2f}",
+                Text(f"{net:+.2f}" if position else "—", style=change_style(net)),
+                "above cost" if net > 0 else "below cost" if position else "no position",
+            )
+    note = Text(" BUY/SELL are frozen research classifications for premium direction.\n"
                 " Cost = configured fixed fees/lot + variable bps + quoted spread.\n"
                 " Charges are assumptions; edit config/default.yaml. INDEX is a reference.\n"
-                " No fills or realised P&L are claimed; forecast ranges are heuristic.", style="grey62")
-    return Panel(Group(table, note), title="[grey62]scalp costs · premium resale over 3 bars[/]", border_style=PANEL_BORDER)
+                " Values are hypothetical; no fills or realised P&L are claimed.", style="grey62")
+    return Panel(Group(table, note), title="[grey62]position scenarios · next 3 premium bars[/]", border_style=PANEL_BORDER)
 
 
-__all__ = ["board_footer", "board_header", "leg_panel", "verdicts"]
+__all__ = [
+    "ai_scores",
+    "board_footer",
+    "board_header",
+    "leg_panel",
+    "research_scores",
+    "scalp_costs",
+    "strategy_matrix",
+    "verdicts",
+]

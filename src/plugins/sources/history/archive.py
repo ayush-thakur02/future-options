@@ -89,7 +89,16 @@ class RealtimeArchive:
         if bars.empty:
             return 0
 
-        candle_store.write(bars)
+        candle_entry = candle_store.manifest.dataset(candle_store.dataset, candle_store.key)
+        sources = set(candle_entry.get("sources", []))
+        trusted = sources & {"broker", "websocket", "manual"}
+        if candle_store.exists() and not trusted:
+            # Legacy releases could put simulation under the live instrument
+            # key. A real tape is authoritative and starts a clean live store.
+            candle_store.replace(bars)
+        else:
+            candle_store.write(bars)
+        sources.add("websocket")
         previous_rows = int(checkpoint.get("bars_materialized", 0) or 0)
         candle_store.manifest.update(
             candle_store.dataset,
@@ -102,6 +111,7 @@ class RealtimeArchive:
                 "tick_rows": tape_rows,
                 "bars_materialized": previous_rows + len(bars),
             },
+            sources=sorted(sources),
         )
         return len(bars)
 
