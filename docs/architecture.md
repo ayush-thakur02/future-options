@@ -31,11 +31,15 @@ src/
 │   ├── features/technical/             indicators, session context, assembly
 │   ├── strategies/
 │   │   ├── trend/ momentum/ reversion/ volatility/     nineteen rules
+│   │   ├── channels/ flow/ regime/ statistical_anchor/ eleven rules
 │   │   └── ml_forecast/                 the model as a strategy
 │   ├── forecasts/
 │   │   ├── ml_ensemble/    labelling, splits, models, calibration, inference
 │   │   └── projection/     the next three candles, re-projected every second
-│   ├── advisory/breakeven_gate/        does the move pay for the position?
+│   │   └── online_research/ three causal incremental classifiers and ledgers
+│   ├── advisory/
+│   │   ├── breakeven_gate/  does the move pay for the position?
+│   │   └── performance_ledger/ strategy accuracy, P&L, drawdown and trust
 │   └── renderers/terminal/             charts, panels, the board, the live loop
 ├── runtime/            session, engine, board, nowcast, conviction, bars
 ├── backtest/           costs, engine, report
@@ -43,7 +47,7 @@ src/
 ```
 
 `niftypulse plugins` prints what is actually registered, with capabilities:
-**15 packs, 30 capabilities**.
+**21 bundled plugins, 43 capabilities**.
 
 ---
 
@@ -104,9 +108,10 @@ The engine does different amounts of work at different moments, on purpose.
 fold the tick into the momentum estimate. Nothing else. A tick that starts a new
 bar also closes the old one, which is the expensive path.
 
-**On a bar close**: rebuild the feature matrix, score nineteen strategies, run the
-model, blend the ensemble view, score the projections that targeted this bar, and
-redraw the path.
+**On a bar close**: rebuild the 147-column feature matrix, score thirty strategies,
+observe exact-target AI and rule outcomes, issue new one-/two-/three-bar AI
+forecasts and three-bar rule forecasts, blend the ensemble view, score projected
+candles, and redraw the path.
 
 **Every second** (`NowcastLoop`): rebuild the projected path from the live price
 and the current view, and publish. Ticks drive the anchor; the clock drives the
@@ -142,8 +147,8 @@ converged — after 2,000 bars the residual influence of the seed is around 1e-8
 A shorter window would introduce a train/serve skew that silently degrades every
 prediction.
 
-The strategy layer gets a 600-bar tail for a different reason: evaluating nineteen
-strategies across 2,000 bars dominated the live loop, and the longest lookback any
+The strategy layer gets a 600-bar tail for a different reason: evaluating the full
+strategy catalog across 2,000 bars dominated the live loop, and the longest lookback any
 strategy applies internally is about 100 bars.
 
 ### Costs are a first-class input, not a reporting afterthought
@@ -203,7 +208,7 @@ Measured on the bundled generated data.
 | Stage | Cost |
 |---|---|
 | Load the bars | ~100 ms |
-| Warm three instruments (features + 19 strategies each) | ~500 ms |
+| Warm three instruments (features + strategy catalog each) | hardware-dependent |
 | **First frame on screen** | **~0.6 s** |
 
 It was 40 seconds, and the whole of it was one function: pricing premium candles
@@ -218,7 +223,7 @@ a single row. Per-refresh cost across the board is **~7–9 ms**.
 | Stage | Cost |
 |---|---|
 | `build_features` (2,000 bars) | ~50 ms |
-| strategies (19 rules, 600-bar tail) | ~150 ms |
+| strategies (30 rules, 600-bar tail) | hardware-dependent |
 | model inference (single row, parallel inference off) | ~40 ms |
 | projection refresh (whole board, 1 Hz) | ~7–9 ms |
 | render | ~3 ms |

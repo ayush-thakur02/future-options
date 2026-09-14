@@ -8,7 +8,11 @@ data/
 ├── manifest.json
 ├── candles/NSE_INDEX_Nifty_50/2026/09/2026-09-11.parquet
 ├── ticks/NSE_INDEX_Nifty_50/2026-09-11/09.parquet
-└── chain/NSE_INDEX_Nifty_50-chain/2026-09-11/09.parquet
+├── ticks/NSE_INDEX_Nifty_50/.pending.jsonl
+├── chain/NSE_INDEX_Nifty_50-chain/2026-09-11/09.parquet
+└── research/
+    ├── strategies.sqlite3
+    └── online_ai/{live|simulation}/<instrument>.sqlite3
 ```
 
 `niftypulse data` prints the inventory; `niftypulse data --verbose` lists every
@@ -55,6 +59,18 @@ reopen a closed shard. A write per tick would spend the whole session in the
 filesystem: a parquet write costs milliseconds and a NIFTY tick arrives every few
 milliseconds at the open.
 
+Before entering that memory buffer, every tick is appended to
+`.pending.jsonl`. The journal is flushed and synced on a short cadence, recovered
+at recorder startup, and truncated only after its rows are safely compacted into
+Parquet. A partial last line from a killed process is ignored while every complete
+event remains recoverable.
+
+Tick identity hashes the full event, including quote/depth/greek values when
+present. Two WebSocket updates with the same exchange timestamp are retained if
+their payload differs; replaying an identical event is idempotent. Parquet shards
+and the manifest use temporary files, `fsync`, and atomic rename under per-file
+locks, so a crash cannot expose a half-written replacement.
+
 Chain snapshots are sampled once a minute rather than streamed. Open interest and
 implied vol move on a scale of minutes, and polling faster mostly records the same
 numbers again.
@@ -96,8 +112,9 @@ find out. The files are the truth.
 
 ## Never fetching twice
 
-`niftypulse sync` (and every `dashboard` run with credentials) checks the cache
-first and requests only the missing tail:
+`niftypulse sync` and dashboard startup recover the journal first, convert the
+local tick tape into complete session-anchored candles, then check candle
+coverage. The broker is asked only for the missing prefix or tail:
 
 ```
 niftypulse sync --days 400
@@ -107,6 +124,11 @@ niftypulse sync --days 400
 - Cache two days stale → one request covering two days.
 - No cache → the configured window, chunked to respect the provider's request
   caps and stitched.
+
+The coverage check includes the requested start. A small recent tail cannot be
+mistaken for a complete warm-up window. Candle manifest entries record whether
+their source was `broker`, `websocket`, `manual`, or `simulation`; simulation
+uses its own instrument key and never suppresses a live backfill.
 
 Open `niftypulse sync --offline` and it will use whatever is cached, or generate a
 series when the cache is empty — which is also how the whole pipeline can be
@@ -141,9 +163,9 @@ store.coverage()                               # from the manifest
 store.write(frame)                             # merge, deduplicated on the index
 ```
 
-A write is idempotent: the partition it lands in is deduplicated on the timestamp
-index with the incoming row winning, so re-fetching the current session — which
-the platform does constantly — cannot duplicate anything.
+A candle write is idempotent on timestamp. A tick write is idempotent on
+timestamp plus event identity, preserving distinct same-time updates while
+preventing replay duplication.
 
 ---
 

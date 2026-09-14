@@ -30,6 +30,7 @@ Alternatively, after `uv sync` the entry point is on the venv path:
 │ sync        Pull everything the account can give, and store it. Never        │
 │             fetches twice.                                                   │
 │ doctor      Check the environment, credentials, and cached data.             │
+│ research    Print durable forecast, AI, strategy, P&L and trust scorecards.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -153,13 +154,18 @@ traded.
 | `--nowcast` | `1.0` | Seconds between projection refreshes |
 | `--bars-ahead` | `3` | How many candles to project |
 | `--legs / --no-legs` | on | Chart the at-the-money call and put beside the index |
+| `--workers` | configured | CPU workers; `-1` uses all available CPUs |
+| `--learn / --no-learn` | on | Update per-instrument online return learners |
+| `--view` | `research` | Initial panel: `research`, `costs`, `indicators`, or `ai` |
 
 Offline, the feed is **paced against the wall clock** — a one-minute bar takes a
 minute — so the projected candles have seconds to move in. `--speed 60` makes a
 minute take a second.
 
-With credentials it pulls history first, then streams the live WebSocket, and
-records ticks and chain samples while it runs. See [Dashboard](dashboard.md).
+With credentials it recovers the local tape, fills only missing history, then
+streams the live WebSocket and records ticks and chain samples while it runs.
+Keys `1`–`4` select results, positions, indicators and AI; `j`/`k` scroll the
+strategy grid. See [Dashboard](dashboard.md).
 
 ---
 
@@ -231,6 +237,30 @@ See [Plugins](plugins.md).
 | `partitioned store` | Bars on disk, from the manifest — no scanning |
 | `recorded ticks` / `chain samples` | Data that cannot be re-fetched, so its volume is worth knowing |
 | `market` | Whether the NSE session is currently open, per the trading calendar |
+
+---
+
+## `research`
+
+**Print persisted research tables into normal terminal scrollback.**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--offline` | off | Read simulation ledgers instead of live ledgers |
+| `--failures` | off | Show recent projected-candle misses with their issue context |
+| `--limit` | `100` | Maximum rows per report section, up to 1,000 |
+| `--section` | `all` | `all`, `forecasts`, `ai`, `predictions`, or `strategies` |
+| `--json` | off | Emit the selected report as structured JSON |
+
+The report separates statistical quality from economics so the grids remain
+readable in an ordinary terminal. It includes exact-target accuracy, rolling
+accuracy, baseline lift, calibration, profit, loss, costs, net P&L, drawdown,
+pending/expired counts and trust for each online algorithm. Strategy tables show
+the same cost-aware outcome view per instrument and rule. Latest AI rows include
+the one-, two-, and three-bar BUY/SELL/HOLD research classification.
+
+P&L is a hypothetical directional return in basis points after configured cost
+assumptions. It is not an account statement or evidence of an executed fill.
 
 ---
 

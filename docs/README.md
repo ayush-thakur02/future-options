@@ -63,8 +63,8 @@ tuning anything.
 ### Components
 - [Data layer](data-layer.md) — Upstox auth, REST, WebSocket, protobuf, aggregation
 - [Storage](storage.md) — the partitioned store, the manifest, recording the tape
-- [Features](features.md) — all 123 columns, grouped and explained
-- [Strategies](strategies.md) — the 19 rule-based strategies, the model, the ensemble
+- [Features](features.md) — all 147 columns, grouped and explained
+- [Strategies](strategies.md) — 30 rule-based strategies, the model, and the ensemble
 - [ML pipeline](ml-pipeline.md) — labelling, purged validation, models, calibration
 - [Projection](projection.md) — the next three candles, and how they are scored
 - [Options](options.md) — pricing, the chain, the board, the verdicts
@@ -83,7 +83,7 @@ tuning anything.
 
 ## Status
 
-**387 tests, lint clean.** Verified end to end on macOS with Python 3.14.7 —
+**Full test suite and lint clean.** Verified end to end on Python 3.14.7 —
 live-path logic exercised by tests, the interactive dashboard and the full
 pipeline run offline on generated data.
 

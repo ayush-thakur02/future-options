@@ -1,12 +1,13 @@
 # Features
 
-123 columns, of which **117 are model-usable** against the bundled data. Every
+147 columns, of which **141 are model-usable** against the bundled data. Every
 column is tagged with a group so the training report can show where a model is
 actually drawing its signal from.
 
 ```
 src/plugins/features/technical/
-├── indicators.py   40+ indicators, pure pandas
+├── indicators.py   classic indicators, pure pandas
+├── advanced.py     adaptive trend, risk, entropy and liquidity mathematics
 ├── session.py      Session, calendar, prior-session, regime
 ├── pipeline.py     Matrix assembly and the FeaturePipeline object
 └── plugin.py       The pack: provides "features"
@@ -57,6 +58,7 @@ where the day's high ends up.
 | [activity](#activity) | 4–7 | Volume, or tick count for an index |
 | [candle](#candle) | 4–5 | Bar anatomy |
 | [regime](#regime) | 2 | Statistical character of the series |
+| [quantitative](#quantitative) | 24 | Adaptive filters, tail risk, dependence and liquidity |
 | [context](#context) | 24 | Clock, calendar, prior session |
 
 ---
@@ -227,6 +229,34 @@ deviation, a scale-free measure of stretch.
 
 ---
 
+## quantitative
+
+*24 usable*
+
+```
+kama_dist_10, dema_dist_20, tema_dist_20, trix_15, ppo_line, ppo_signal,
+ppo_hist, fisher_10, fisher_signal, rvi_10, rvi_signal, elder_bull_13,
+elder_bear_13, choppiness_14, ulcer_14, downside_dev_30, sortino_30,
+autocorr_1_50, variance_ratio_5_60, direction_entropy_50, mass_index_25,
+ad_slope_20, ease_of_movement_14, amihud_20
+```
+
+KAMA adapts its smoothing speed to price efficiency; DEMA and TEMA reduce lag;
+TRIX and PPO measure multi-scale momentum. Fisher, relative vigor and Elder
+pressure describe where closes sit inside recent price structure.
+
+The risk block separates volatility from harmful volatility: ulcer index tracks
+drawdown depth, downside deviation and rolling Sortino isolate negative returns,
+and mass index measures range expansion. Autocorrelation, variance ratio and
+directional entropy distinguish persistence, mean reversion and random sign
+sequences. Accumulation/distribution slope, ease of movement and Amihud
+illiquidity add participation and price-impact context when activity exists.
+
+Every implementation is causal and covered by prefix-invariance tests: computing
+on a longer series cannot change a value already produced for an earlier bar.
+
+---
+
 ## context
 
 *24 usable*
@@ -264,7 +294,7 @@ it is configurable because the exchange has changed this before.
 from plugins.features.technical import build_features, feature_columns
 
 features = build_features(bars, bar_minutes=1, expiry_weekday=1)
-columns = feature_columns(features)   # 117, numeric and non-constant
+columns = feature_columns(features)   # 141, numeric and non-constant on bundled data
 ```
 
 `build_features` returns `inf` replaced by `NaN` — some ratios can blow up on a
@@ -279,7 +309,7 @@ correctly whereas `inf` is not.
 - **constant columns** — anything with one unique value carries no information
   and would only add noise to importance rankings
 
-Columns are accumulated in a dict and concatenated once. Assigning 123 columns to
+Columns are accumulated in a dict and concatenated once. Assigning 147 columns to
 a DataFrame individually triggers pandas' fragmentation warning and is markedly
 slower.
 
@@ -300,7 +330,7 @@ window introduces a train/serve skew that degrades every prediction quietly. See
 
 ## Adding a feature
 
-1. Implement the indicator in `indicators.py`, causal and vectorised.
+1. Implement the indicator in `indicators.py` or `advanced.py`, causal and vectorised.
 2. Add it in the appropriate `_add_*` function in `pipeline.py`, appending its
    name to that group's `columns` list.
 3. If it opens a new group, call `_register(group, columns)`.

@@ -321,7 +321,7 @@ def dashboard(
     ),
     workers: int | None = typer.Option(None, help="CPU workers (-1 = all available CPUs; default from config)"),
     learn: bool = typer.Option(True, "--learn/--no-learn", help="Update instrument models as candles close"),
-    view: str = typer.Option("research", help="Initial panel: research, costs, indicators"),
+    view: str = typer.Option("research", help="Initial panel: research, costs, indicators, or ai"),
 ) -> None:
     """Run the dashboard: call, index and put, with the next three candles projected."""
     settings = _settings()
@@ -767,42 +767,276 @@ def doctor(live: bool = typer.Option(False, "--live", help="Validate credentials
 def research(
     offline: bool = typer.Option(False, "--offline", help="Inspect simulation outcomes instead of live"),
     failures: bool = typer.Option(False, "--failures", help="Show recent misses and their original context"),
-    limit: int = typer.Option(20, min=1, max=1000),
+    limit: int = typer.Option(100, min=1, max=1000),
+    section: str = typer.Option(
+        "all", help="Report section: all, forecasts, ai, predictions, or strategies"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Machine-readable report for further research"),
 ) -> None:
-    """Report persisted prediction outcomes; warm-up samples are never successes."""
+    """Print durable forecast, AI, and strategy research into terminal scrollback."""
     import json
     import sqlite3
 
-    path = _settings().data_dir / "research" / ("simulation.sqlite3" if offline else "live.sqlite3")
-    if not path.exists():
-        console.print("No recorded research session yet. Start niftypulse dashboard.")
-        return
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
-        db.row_factory = sqlite3.Row
-        if failures:
-            records = [dict(row) for row in db.execute("""SELECT instrument,timeframe,target,horizon,
-                predicted_close,actual_close,error_bps,context FROM forecasts WHERE status='miss'
-                ORDER BY target DESC LIMIT ?""", (limit,))]
-        else:
-            records = [dict(row) for row in db.execute("""SELECT instrument,timeframe,horizon,
-                SUM(status IN ('hit','miss')) AS scored, SUM(status='hit') AS wins,
-                SUM(status='miss') AS misses, ROUND(100.0*SUM(status='hit')/
-                NULLIF(SUM(status IN ('hit','miss')),0),2) AS hit_pct,
-                ROUND(AVG(error_bps),3) AS mae_bps,
-                SUM(status IN ('missing_bar','unresolved','pending')) AS unscored
-                FROM forecasts GROUP BY instrument,timeframe,horizon ORDER BY instrument,timeframe,horizon""")]
+    selected = section.strip().lower()
+    allowed = {"all", "forecasts", "ai", "predictions", "strategies"}
+    if selected not in allowed:
+        raise typer.BadParameter(f"section must be one of: {', '.join(sorted(allowed))}")
+
+    settings = _settings()
+    mode = "simulation" if offline else "live"
+    research_dir = settings.data_dir / "research"
+    payload: dict[str, object] = {"mode": mode}
+
+    if selected in {"all", "forecasts"}:
+        path = research_dir / f"{mode}.sqlite3"
+        records: list[dict] = []
+        if path.exists():
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+                db.row_factory = sqlite3.Row
+                if failures:
+                    query = """SELECT instrument,timeframe,target,horizon,
+                        predicted_close,actual_close,error_bps,context FROM forecasts
+                        WHERE status='miss' ORDER BY target DESC LIMIT ?"""
+                    records = [dict(row) for row in db.execute(query, (limit,))]
+                else:
+                    query = """SELECT instrument,timeframe,horizon,
+                        SUM(status IN ('hit','miss')) AS scored, SUM(status='hit') AS wins,
+                        SUM(status='miss') AS misses, ROUND(100.0*SUM(status='hit')/
+                        NULLIF(SUM(status IN ('hit','miss')),0),2) AS hit_pct,
+                        ROUND(AVG(error_bps),3) AS mae_bps,
+                        SUM(status IN ('missing_bar','unresolved','pending')) AS unscored
+                        FROM forecasts GROUP BY instrument,timeframe,horizon
+                        ORDER BY instrument,timeframe,horizon"""
+                    records = [dict(row) for row in db.execute(query)]
+        payload["forecast_failures" if failures else "forecasts"] = records
+
+    if selected in {"all", "ai", "predictions"}:
+        from plugins.forecasts.online_research import OnlineResearchLab
+
+        scorecards: list[dict] = []
+        latest: list[dict] = []
+        for state_path in sorted((research_dir / "online_ai" / mode).glob("*.sqlite3")):
+            lab = OnlineResearchLab(state_path)
+            ledger = lab.records()
+            instrument = ledger[-1].instrument if ledger else state_path.stem
+            for card in lab.scorecards():
+                all_time = card.all_time
+                rolling = card.rolling
+                scorecards.append(
+                    {
+                        "instrument": instrument,
+                        "algorithm": card.algorithm,
+                        "samples": all_time.sample_count,
+                        "accuracy": round(all_time.accuracy * 100.0, 2),
+                        "lift": round(all_time.accuracy_lift * 100.0, 2),
+                        "rolling_accuracy": round(rolling.accuracy * 100.0, 2),
+                        "brier": round(all_time.brier_score, 4),
+                        "calibration_error": round(all_time.calibration_error, 4),
+                        "trades": all_time.trade_count,
+                        "wins": all_time.wins,
+                        "losses": all_time.losses,
+                        "profit_bps": round(all_time.profit_bps, 2),
+                        "loss_bps": round(all_time.loss_bps, 2),
+                        "net_pnl_bps": round(all_time.net_pnl_bps, 2),
+                        "drawdown_bps": round(all_time.max_drawdown_bps, 2),
+                        "trust": round(card.trust_score * 100.0, 2),
+                        "pending": lab.pending_count,
+                        "expired": lab.expired_count,
+                    }
+                )
+            seen: set[tuple[str, int]] = set()
+            for record in reversed(ledger):
+                key = (record.algorithm, record.horizon_min)
+                if key in seen:
+                    continue
+                seen.add(key)
+                latest.append(
+                    {
+                        "instrument": record.instrument or instrument,
+                        "algorithm": record.algorithm,
+                        "horizon": record.horizon_min,
+                        "issued_at": record.issued_at.isoformat(),
+                        "target_at": record.target_at.isoformat(),
+                        "action": record.action.value,
+                        "p_up": round(record.p_up * 100.0, 2),
+                        "confidence": round(record.confidence * 100.0, 2),
+                        "trust": round(record.trust_at_issue * 100.0, 2),
+                        "status": record.status,
+                    }
+                )
+        if selected in {"all", "ai"}:
+            payload["ai_scorecards"] = scorecards[:limit]
+        if selected in {"all", "ai", "predictions"}:
+            payload["latest_ai_predictions"] = latest[:limit]
+
+    if selected in {"all", "strategies"}:
+        from plugins.advisory.performance_ledger import StrategyPerformanceLedger
+
+        strategy_path = research_dir / "strategies.sqlite3"
+        strategy_rows: list[dict] = []
+        counts: dict[str, int] = {}
+        if strategy_path.exists():
+            ledger = StrategyPerformanceLedger(strategy_path)
+            counts = ledger.counts()
+            for card in ledger.scorecards():
+                strategy_rows.append(
+                    {
+                        "instrument": card.instrument,
+                        "strategy": card.strategy,
+                        "samples": card.samples,
+                        "accuracy": round(card.accuracy * 100.0, 2),
+                        "wins": card.wins,
+                        "losses": card.losses,
+                        "gross_pnl_bps": round(card.gross_pnl_bps, 2),
+                        "cost_bps": round(card.cost_paid_bps, 2),
+                        "profit_bps": round(card.profit_bps, 2),
+                        "loss_bps": round(card.loss_bps, 2),
+                        "net_pnl_bps": round(card.net_pnl_bps, 2),
+                        "mean_net_bps": round(card.mean_net_pnl_bps, 2),
+                        "drawdown_bps": round(card.max_drawdown_bps, 2),
+                        "trust": round(card.trust_score * 100.0, 2),
+                    }
+                )
+        strategy_rows.sort(key=lambda row: (str(row["instrument"]), -float(row["trust"])))
+        payload["strategy_scorecards"] = strategy_rows[:limit]
+        payload["strategy_outcomes"] = counts
+
     if json_output:
-        console.print_json(json.dumps(records))
+        console.print_json(json.dumps(payload))
         return
-    table = Table(title="Forecast misses" if failures else "Forward outcomes · first-issued forecasts", header_style="bold cyan")
-    if records:
-        for name in records[0]:
-            table.add_column(name, overflow="fold")
-        for record in records:
-            table.add_row(*(str(value) if value is not None else "—" for value in record.values()))
-    console.print(table)
-    console.print("[dim]Direction uses a 0.1bp deadband relative to the issue price. Hit rate is not trading P&L.\nRepeated runs have separate IDs; --json exports context for further analysis.[/]")
+
+    rendered = False
+    views = (
+        (
+            "forecasts",
+            "Forward outcomes · first-issued projected candles",
+            (
+                ("instrument", "instrument"),
+                ("timeframe", "tf"),
+                ("horizon", "horizon"),
+                ("scored", "n"),
+                ("wins", "wins"),
+                ("misses", "misses"),
+                ("hit_pct", "hit %"),
+                ("mae_bps", "MAE bp"),
+                ("unscored", "unscored"),
+            ),
+        ),
+        ("forecast_failures", "Forecast misses · frozen issue context", None),
+        (
+            "ai_scorecards",
+            "Online AI · causal quality and trust",
+            (
+                ("instrument", "instrument"),
+                ("algorithm", "algorithm"),
+                ("samples", "n"),
+                ("accuracy", "acc %"),
+                ("lift", "lift %"),
+                ("rolling_accuracy", "roll %"),
+                ("brier", "Brier"),
+                ("calibration_error", "ECE"),
+                ("trust", "trust %"),
+            ),
+        ),
+        (
+            "ai_scorecards",
+            "Online AI · hypothetical economics after costs",
+            (
+                ("instrument", "instrument"),
+                ("algorithm", "algorithm"),
+                ("trades", "trades"),
+                ("wins", "W"),
+                ("losses", "L"),
+                ("profit_bps", "profit bp"),
+                ("loss_bps", "loss bp"),
+                ("net_pnl_bps", "net bp"),
+                ("drawdown_bps", "DD bp"),
+                ("pending", "pending"),
+                ("expired", "expired"),
+            ),
+        ),
+        (
+            "latest_ai_predictions",
+            "Latest AI research predictions · no broker execution",
+            (
+                ("instrument", "instrument"),
+                ("algorithm", "algorithm"),
+                ("horizon", "horizon"),
+                ("target_at", "target"),
+                ("action", "view"),
+                ("p_up", "up %"),
+                ("confidence", "conf %"),
+                ("trust", "trust %"),
+                ("status", "status"),
+            ),
+        ),
+        (
+            "strategy_scorecards",
+            "Strategies · causal quality and trust",
+            (
+                ("instrument", "instrument"),
+                ("strategy", "strategy"),
+                ("samples", "n"),
+                ("accuracy", "acc %"),
+                ("wins", "W"),
+                ("losses", "L"),
+                ("trust", "trust %"),
+            ),
+        ),
+        (
+            "strategy_scorecards",
+            "Strategies · hypothetical one-unit economics after costs",
+            (
+                ("instrument", "instrument"),
+                ("strategy", "strategy"),
+                ("gross_pnl_bps", "gross bp"),
+                ("cost_bps", "cost bp"),
+                ("profit_bps", "profit bp"),
+                ("loss_bps", "loss bp"),
+                ("net_pnl_bps", "net bp"),
+                ("mean_net_bps", "mean bp"),
+                ("drawdown_bps", "DD bp"),
+            ),
+        ),
+    )
+    for name, title, columns in views:
+        rows = payload.get(name)
+        if not isinstance(rows, list) or not rows:
+            continue
+        table = Table(title=title, header_style="bold cyan", show_lines=name.endswith("scorecards"))
+        selected_columns = columns or tuple((column, column) for column in rows[0])
+        for column, label in selected_columns:
+            table.add_column(
+                label,
+                overflow="fold",
+                no_wrap=column not in {"context", "instrument", "strategy", "algorithm"},
+            )
+        for row in rows:
+            table.add_row(
+                *(
+                    str(row.get(column)) if row.get(column) is not None else "—"
+                    for column, _label in selected_columns
+                )
+            )
+        console.print(table)
+        rendered = True
+
+    counts = payload.get("strategy_outcomes")
+    if isinstance(counts, dict) and counts:
+        console.print(
+            "[cyan]strategy ledger[/] "
+            + " · ".join(f"{status} {count:,}" for status, count in sorted(counts.items()))
+        )
+        rendered = True
+    if not rendered:
+        console.print("No recorded research outcomes yet. Start niftypulse dashboard.")
+        return
+    console.print(
+        "[dim]Accuracy and trust use only exact target bars; missed targets expire. "
+        "P&L is a hypothetical directional return in basis points after configured costs, "
+        "not broker fills or guaranteed profit. Use --section and --limit for terminal scrollback, "
+        "or --json for analysis.[/]"
+    )
 
 
 def main() -> None:

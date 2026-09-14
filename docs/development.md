@@ -25,8 +25,8 @@ Line length 100, target Python 3.11. Rules: `E`, `F`, `I`, `UP`, `B`.
 
 ## Testing philosophy
 
-387 tests. The interesting ones are not the ones that check a function returns a
-value — they are the ones designed to **fail in a specific way if something
+The full suite covers every layer. The interesting tests are not the ones that
+check a function returns a value; they are designed to **fail in a specific way if something
 subtly breaks.**
 
 ### Positive and negative controls

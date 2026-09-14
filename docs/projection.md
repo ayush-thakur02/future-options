@@ -41,7 +41,7 @@ Three inputs at three cadences, each earning its place:
 
 | Input | Cadence | What it is |
 |---|---|---|
-| Strategy ensemble + model | bar close | The considered view: nineteen rules blended, times the model's probability when trained |
+| Strategy ensemble + models | bar close | Thirty rules blended with trusted online AI and the trained batch model when available |
 | Bar-scale trend | every refresh | Fast against slow EMA over recent bars, in ATR units, saturated to ±1 |
 | Tick momentum | every tick | Fast against slow exponential average of *tick* prices, saturated to ±1 |
 

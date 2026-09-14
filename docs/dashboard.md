@@ -71,12 +71,24 @@ move over the same horizon, `edge` is the difference, `do` is the action. The
 headline either names a trade or says plainly that nothing clears its own
 breakeven. See [Options](options.md).
 
-### Strategies and indicators
+### Scrollable research grids
 
-The index leg's active strategies, and its indicator state with a plain-language
-reading (`overbought`, `strong trend`, `above upper band`). Both panels are sized
-to their content rather than flexing: letting them flex clips the last horizon off
-the bottom, which is the row a reader most wants.
+The strategy grid contains every discovered rule for index, call and put. It
+shows ACTIVE, WAIT or N/A, the rule explanation, and measured three-bar hits, net
+return and trust when outcomes exist. Use `j` and `k` to move through its rows.
+
+The right panel changes with the numbered views:
+
+| Key | View |
+|---|---|
+| `1` | Frozen projected-candle results by leg and horizon |
+| `2` | CALL and PUT scenarios for each of the next three bars: projected premium, gross move, estimated cost and net value per lot |
+| `3` | Indicator state and plain-language readings such as `overbought`, `strong trend` and `above upper band` |
+| `4` | Each online classifier's BUY/SELL/HOLD view, probability and trust, plus sample count, accuracy, rolling accuracy, P&L and drawdown |
+
+The full-screen dashboard uses internal row scrolling. `niftypulse research`
+prints the durable scorecards as a sequence of regular tables when native
+terminal scrollback is more useful.
 
 ---
 

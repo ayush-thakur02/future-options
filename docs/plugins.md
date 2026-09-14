@@ -59,9 +59,9 @@ A kind is the slot a plugin fills. It exists so a handle can read
 | `source` | Data from outside: ticks, bars, the chain | `upstox`, `simulated`, `history`, `option_chain` |
 | `aggregator` | Tick → bar | `candle_builder` |
 | `features` | Bar → model inputs | `technical` |
-| `strategy` | Bar → signed conviction | `trend`, `momentum`, `reversion`, `volatility`, `ml_forecast` |
-| `forecast` | Conviction → probabilities and projected paths | `ml_ensemble`, `projection` |
-| `advisory` | A whole board → a verdict per leg | `breakeven_gate` |
+| `strategy` | Bar → signed conviction | `trend`, `momentum`, `reversion`, `volatility`, `channels`, `flow`, `regime`, `statistical_anchor`, `ml_forecast` |
+| `forecast` | Conviction → probabilities and projected paths | `ml_ensemble`, `projection`, `online_research` |
+| `advisory` | Board verdicts and measured research outcomes | `breakeven_gate`, `performance_ledger` |
 | `renderer` | A snapshot → something a human reads | `terminal` |
 | `tool` | Offline research that is not part of the live graph | (reserved) |
 
@@ -81,6 +81,8 @@ aggregator:candle_builder   provides  bars
 features:technical          provides  features
 forecast:projection         provides  projection
 advisory:breakeven_gate     provides  advisory      requires projection
+forecast:online_research    provides  online_research
+advisory:performance_ledger provides  strategy_performance
 source:history              provides  history       requires broker
 source:upstox               provides  broker
 ```
@@ -100,6 +102,9 @@ Three rules make this work:
    capability.
 
 `niftypulse plugins --capabilities` prints the live index.
+The bundled tree currently discovers 21 plugins and 43 capabilities. Strategy
+manifests derive each `strategy:<name>` capability from their class tuple, so the
+catalog, CLI and live engine cannot silently disagree about which rules exist.
 
 ---
 

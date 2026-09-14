@@ -110,7 +110,7 @@ class Session:
         """Load history and warm everything up, so the first frame is readable.
 
         ``progress`` is called at each stage. Warming three instruments is real
-        work — a feature matrix and nineteen strategies per instrument — and a
+        work — a feature matrix and the full strategy catalog per instrument — and a
         silent pause before the first frame reads as a hang.
         """
         report = progress or (lambda _message: None)

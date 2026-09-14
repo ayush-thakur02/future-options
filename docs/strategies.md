@@ -1,6 +1,6 @@
 # Strategies
 
-**19 rule-based strategies**, plus the trained model as a strategy, plus a
+**30 rule-based strategies**, plus the trained model as a strategy, plus a
 composite ensemble. All share one interface.
 
 ```
@@ -11,6 +11,10 @@ src/plugins/strategies/
 ├── momentum/     5 rules  + plugin.py
 ├── reversion/    5 rules  + plugin.py
 ├── volatility/   4 rules  + plugin.py
+├── channels/     3 rules  + plugin.py
+├── flow/         3 rules  + plugin.py
+├── regime/       3 rules  + plugin.py
+├── statistical_anchor/  2 paired rules + plugin.py
 └── ml_forecast/  1 rule   + plugin.py    requires "forecast"
 ```
 
@@ -247,6 +251,49 @@ tilt with SuperTrend direction and a cleanliness filter.
 
 ---
 
+## Channels
+
+| Strategy | Mathematics |
+|---|---|
+| `keltner_continuation` | Follows acceptance beyond a Keltner envelope when ADX and directional movement agree |
+| `regression_channel_breakout` | Trades a least-squares channel break, scaled by regression fit and slope agreement |
+| `channel_pressure` | Measures repeated closes near one side of a rolling range and gates them on directional strength |
+
+## Flow
+
+| Strategy | Mathematics |
+|---|---|
+| `chaikin_flow_trend` | Confirms directional momentum with Chaikin money flow and participation |
+| `money_flow_reversal` | Requires MFI to turn out of an extreme with candle-location confirmation |
+| `obv_divergence` | Compares price and OBV slopes and requires sufficient activity |
+
+The flow pack returns zero when an instrument has neither volume nor a tick-count
+proxy. Absence of activity data is not interpreted as neutral flow evidence.
+
+## Adaptive regime
+
+| Strategy | Mathematics |
+|---|---|
+| `hurst_adaptive` | Follows persistent markets and fades anti-persistent markets using rolling Hurst |
+| `directional_entropy` | Follows sign imbalance only when binary entropy says recent direction is predictable |
+| `volatility_state_rotation` | Uses momentum in volatility expansion and fades z-score stretch in contraction |
+
+## Statistical anchor
+
+| Strategy | Mathematics |
+|---|---|
+| `anchor_spread_reversion` | Estimates rolling beta, standardizes the log-price spread and fades an extreme |
+| `relative_strength_rotation` | Follows beta-adjusted relative strength against an aligned reference series |
+
+These paired rules require `anchor_close` in `StrategyContext.extras`. Option
+engines receive the aligned index close from the board. A standalone instrument
+without an anchor gets a zero series, keeping the rule causal and explicit.
+
+All eleven additions are independent plugin classes, bounded to `[-1, 1]`, and
+covered by finite-output and prefix-causality tests.
+
+---
+
 ## ML strategy
 
 ### `ml`
@@ -278,7 +325,8 @@ returning all zeros (its inputs unavailable) simply contributes nothing.
 
 ### `catalog.ensemble()`
 
-Blends every strategy the loaded packs offer, using `DEFAULT_WEIGHTS`:
+Blends every strategy the loaded packs offer. The original rules use the priors
+in `DEFAULT_WEIGHTS`:
 
 ```python
 DEFAULT_WEIGHTS = {
@@ -295,8 +343,10 @@ DEFAULT_WEIGHTS = {
 }
 ```
 
-These encode a prior — trend and flow carry more weight than oscillator fades —
-and are meant to be replaced by measured weights after a backtest run.
+These encode a prior and are meant to be replaced by measured weights after a
+backtest run. A newly discovered strategy joins at its class-level
+`default_weight` (0.5 unless the plugin declares another value), so adding a pack
+does not require changing this central map.
 
 Weights naming a strategy this build does not have are dropped silently, which is
 what makes the default map usable offline where the model pack has no artifacts.
@@ -313,7 +363,7 @@ from plugins.strategies import StrategyCatalog
 kernel = Kernel.bootstrap(Settings())
 catalog = StrategyCatalog.from_kernel(kernel)
 
-catalog.summary()             # "19 strategies (momentum 5, reversion 5, trend 5, volatility 4)"
+catalog.summary()             # "30 strategies (channels 3, flow 3, ..., volatility 4)"
 catalog.names()               # sorted rule names
 catalog.get("ema_trend")      # one instance
 catalog.get("ensemble")       # the default composite
@@ -326,6 +376,16 @@ catalog.skipped               # packs that could not be built, and why
 the ones that fail. That is not defensive for its own sake: offline, with no
 trained artifacts, the model pack legitimately cannot be built, and the run must
 still produce a working rule-based engine.
+
+### Persistent forward scorecards
+
+The `advisory:performance_ledger` plugin freezes each active rule signal for a
+three-bar target. It scores only the exact target bar and stores accuracy, wins,
+losses, gross return, configured cost, profit, loss, net return, mean net return,
+maximum drawdown and conservative trust per strategy and instrument. Missing the
+target expires the record instead of scoring a later price. The ledger survives
+restarts in `data/research/strategies.sqlite3` and is shown by both dashboard view
+1 and `niftypulse research --section strategies`.
 
 ---
 
@@ -378,7 +438,8 @@ gate was added.
    strategy may legitimately be run against an instrument that lacks them.
 4. Add the class to that module's `STRATEGIES` tuple. The manifest derives its
    capabilities from there, so nothing else needs registering.
-5. Add a weight to `DEFAULT_WEIGHTS` in `catalog.py` if it should join the ensemble.
+5. Override `default_weight` on the class only if the standard 0.5 ensemble weight
+   is inappropriate.
 6. Run `uv run niftypulse strategies` and check its firing rate is sane.
 
 `roc_momentum` sat unregistered through several versions of the old hand-written

@@ -1,22 +1,26 @@
 # NIFTY Pulse
 
-A scalping research platform for NIFTY 50. Streams independent index, call and put
-prices from Upstox, combines ten trader rules with per-instrument online learning,
-and projects the **next three complete candles**. The nineteen-rule catalog and
-batch training/backtests remain available for separate studies.
+A scalping research platform for NIFTY 50. It streams independent index, call and
+put prices from Upstox, evaluates **30 causal strategies** and three online
+AI classifiers, and projects the **next three complete candles**. Every forecast
+and active strategy signal is frozen at issue time and scored when its exact
+target bar closes.
 
 The live board records first-issued forecasts, then measures wins, misses and
 price error as target candles close. Start with `niftypulse doctor --live` and
-`niftypulse dashboard --workers -1`. Press `1` for research, `2` for costs,
-`3` for indicators, and `q` to exit. Inspect the audit trail with
-`niftypulse research --failures --json`.
+`niftypulse dashboard --workers -1`. Press `1` for research, `2` for positions,
+`3` for indicators, `4` for AI, `j`/`k` to scroll strategy rows, and `q` to exit.
+Inspect the vertically scrollable audit trail with `niftypulse research` or export
+it with `niftypulse research --json`.
 
 See [Live research](docs/live-research.md) for token fallback, actual option
 contracts, online-learning timing, outcome definitions, and parallel execution.
 
 Everything runs locally. No data leaves your machine except the Upstox API calls.
-Live ticks are buffered to instrument partitions and option chains are sampled
-periodically. Live startup fetches a fresh warm-up to establish data provenance.
+Live ticks first enter a synced write-ahead journal and then compact into
+instrument partitions; option chains are sampled periodically. On restart the
+journal is recovered, recorded ticks are materialized into candles, and only a
+missing historical range is requested from the broker.
 
 ---
 
@@ -100,6 +104,7 @@ uv run niftypulse dashboard               # live terminal dashboard
 
 uv run niftypulse strategies              # list strategies and how often they fire
 uv run niftypulse models                  # list trained artifacts and metrics
+uv run niftypulse research                # AI, strategy, P&L and trust scorecards
 uv run niftypulse backtest --strategy ensemble --horizon 5
 uv run niftypulse backtest --strategy ml --horizon 5 --sweep
 ```
@@ -203,17 +208,17 @@ src/
 ├── plugins/       # everything that does work, as small packs
 │   ├── sources/       upstox · simulated · history · option_chain
 │   ├── aggregators/   candle_builder
-│   ├── features/      technical
-│   ├── strategies/    trend · momentum · reversion · volatility · ml_forecast
-│   ├── forecasts/     ml_ensemble · projection
-│   ├── advisory/      breakeven_gate
+│   ├── features/      technical: 147 causal columns
+│   ├── strategies/    8 rule packs · 30 strategies, plus ml_forecast
+│   ├── forecasts/     ml_ensemble · projection · online_research
+│   ├── advisory/      breakeven_gate · performance_ledger
 │   └── renderers/     terminal
 ├── runtime/       # session, engine, board, nowcast, conviction, bars
 ├── backtest/      # costs, execution, reporting
 └── cli.py
 
 docs/                      # full documentation, see docs/README.md
-tests/                     # 387 tests
+tests/                     # indicator, strategy, storage, AI, runtime and CLI tests
 config/default.yaml        # settings
 data/                      # partitioned store: candles, ticks, chain
 ```
@@ -222,7 +227,7 @@ data/                      # partitioned store: candles, ticks, chain
 `plugin.py` into the tree — no registry to edit, no factory to extend. Plugins
 link through declared capabilities rather than imports, so any one can be replaced
 by another that provides the same name. `niftypulse plugins` lists what is wired
-to what: **15 packs, 30 capabilities**. See [Plugins](docs/plugins.md).
+to what: **21 bundled plugins, 43 capabilities**. See [Plugins](docs/plugins.md).
 
 ## Tests
 
@@ -230,11 +235,11 @@ to what: **15 packs, 30 capabilities**. See [Plugins](docs/plugins.md).
 uv run pytest
 ```
 
-387 tests covering indicator correctness, feature causality, split purging,
+The suite covers indicator correctness, feature causality, split purging,
 execution timing, position sizing, cost accounting, the cost hurdle, plugin
 discovery and capability wiring, option pricing identities, projection geometry
-and its scoreboard, storage partitioning, terminal rendering, and the ML pipeline
-end to end.
+and its scoreboard, crash recovery and exact-event tape storage, online AI and
+strategy scorecards, terminal rendering, and the ML pipeline end to end.
 
 Some are worth knowing about:
 

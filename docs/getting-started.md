@@ -102,7 +102,8 @@ the last printed one. Green and red are printed bars; blue is never a printed ba
 
 The default panel shows all ten research rules and forward prediction outcomes
 for each instrument/horizon. Press `2` for the premium-scalping cost calculation,
-`3` for indicators, or `1` to return to research. `q` exits. Historical warm-up
+`3` for indicators, `4` for AI, `j`/`k` to scroll strategies, or `1` to return
+to research. `q` exits. Historical warm-up
 samples are shown separately from live wins and misses. See
 [Live research](live-research.md) for the scoring and learning definitions.
 

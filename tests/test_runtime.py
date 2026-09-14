@@ -51,7 +51,7 @@ def engine_for(bars, settings: Settings | None = None, **kwargs) -> Engine:
 def warmed(bars) -> Engine:
     """One warmed engine for the read-only assertions.
 
-    Warming an engine means computing a full feature matrix and scoring nineteen
+    Warming an engine means computing a full feature matrix and scoring thirty
     strategies over the signal window, which is seconds of work. Sharing it keeps
     the suite honest about what it is testing — the engine's behaviour, not how
     fast it can be rebuilt.
@@ -340,7 +340,7 @@ def test_session_bootstrap_warms_the_engine(offline_session) -> None:
 
 def test_session_replay_produces_frames(offline_session, bars) -> None:
     """A short slice on purpose: each bar close rebuilds features and scores
-    nineteen strategies, so replaying three sessions would take minutes and prove
+    thirty strategies, so replaying three sessions would take minutes and prove
     nothing the first thirty bars do not.
     """
     frames = offline_session.replay(bars.tail(30))

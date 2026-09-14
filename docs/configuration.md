@@ -138,6 +138,13 @@ plugins:
   advisory:breakeven_gate:
     cost_rate: 0.015
     horizon_bars: 3
+  forecast:online_research:
+    rolling_window: 100
+    min_trust_samples: 50
+    buy_probability: 0.56
+    sell_probability: 0.44
+  advisory:performance_ledger:
+    min_trust_samples: 50
   source:upstox:
     feed_mode: full
 ```
@@ -155,6 +162,12 @@ Everything here is merged into the kwargs the plugin's `build` receives, and the
 | `features:technical` | `include_context` | `true` | Session and calendar features |
 | `advisory:breakeven_gate` | `cost_rate` | `0.012` | Round-trip cost as a fraction of premium |
 | `advisory:breakeven_gate` | `horizon_bars` | `3` | Horizon the requirement is quoted over |
+| `forecast:online_research` | `algorithms` | all three | Optional list of `online_logistic`, `passive_aggressive`, `gaussian_nb` |
+| `forecast:online_research` | `rolling_window` | `100` | Matured predictions retained in the rolling score |
+| `forecast:online_research` | `min_trust_samples` | `50` | Evidence needed before trust reaches full sample weight |
+| `forecast:online_research` | `buy_probability`, `sell_probability` | `0.56`, `0.44` | Probability gates for research BUY and SELL classifications |
+| `forecast:online_research` | `min_trust_for_action` | `0.15` | Below this trust, the research classification stays HOLD |
+| `advisory:performance_ledger` | `min_trust_samples` | `50` | Strategy outcomes needed before trust reaches full sample weight |
 | `strategy:ml_forecast` | `horizon`, `min_edge` | `1`, `0.04` | Which trained model, and the noise band |
 | `renderer:terminal` | `refresh` | `1.0` | Seconds between frames |
 
