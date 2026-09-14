@@ -1,0 +1,7 @@
+# Local-only by default. Binding 0.0.0.0 exposes the read-only dashboard to the
+# network and should be done only on a trusted machine/network.
+host: 127.0.0.1
+port: 5050
+refresh_ms: 1000
+open_browser: true
+max_candles: 160
