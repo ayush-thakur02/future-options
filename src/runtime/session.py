@@ -15,6 +15,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -436,7 +437,12 @@ class Session:
         """
         renderer = self.renderer
         interval = max(float(self.config.refresh), 0.05)
-        with renderer.live(), terminal_keys() as read_key:
+        key_context = (
+            terminal_keys()
+            if getattr(renderer, "uses_terminal_keys", True)
+            else nullcontext(lambda: "")
+        )
+        with renderer.live(), key_context as read_key:
             try:
                 while True:
                     if self._fatal_error:

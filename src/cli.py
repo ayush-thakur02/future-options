@@ -322,6 +322,14 @@ def dashboard(
     workers: int | None = typer.Option(None, help="CPU workers (-1 = all available CPUs; default from config)"),
     learn: bool = typer.Option(True, "--learn/--no-learn", help="Update instrument models as candles close"),
     view: str = typer.Option("ai", help="Initial panel: research, costs, indicators, ai, or prediction"),
+    web: bool = typer.Option(False, "--web", help="Open the local Flask web dashboard"),
+    web_host: str | None = typer.Option(None, "--web-host", help="Web bind host (default from renderer config)"),
+    web_port: int | None = typer.Option(None, "--web-port", help="Web bind port (default from renderer config)"),
+    open_browser: bool = typer.Option(
+        True,
+        "--open-browser/--no-open-browser",
+        help="Open the web dashboard in the default browser",
+    ),
 ) -> None:
     """Run the dashboard: call, index and put, with the next three candles projected."""
     settings = _settings()
@@ -329,6 +337,10 @@ def dashboard(
         raise typer.BadParameter("Timeframe, bars ahead, refresh, nowcast and speed must be positive.")
     if view not in {"research", "costs", "indicators", "ai", "prediction"}:
         raise typer.BadParameter("View must be research, costs, indicators, ai or prediction.")
+    if web_host is not None and not web_host.strip():
+        raise typer.BadParameter("Web host cannot be empty.", param_hint="--web-host")
+    if web_port is not None and not 1 <= web_port <= 65535:
+        raise typer.BadParameter("Web port must be between 1 and 65535.", param_hint="--web-port")
     if workers is not None:
         settings.workers = workers
     settings.online_learning = learn
@@ -347,7 +359,18 @@ def dashboard(
             legs=legs,
         ),
     )
-    session.renderer.view = view
+    if web:
+        web_params = {
+            "refresh_ms": max(int(refresh * 1000), 100),
+            "open_browser": open_browser,
+        }
+        if web_host is not None:
+            web_params["host"] = web_host.strip()
+        if web_port is not None:
+            web_params["port"] = web_port
+        session.renderer = session.kernel.build("renderer:web", **web_params)
+    else:
+        session.renderer.view = view
 
     if session.live:
         console.print("[cyan]live Upstox feed[/] — ticks stream as they print\n")
@@ -359,6 +382,11 @@ def dashboard(
     try:
         session.bootstrap(progress=lambda message: console.print(f"[dim]{message}[/]"))
         console.print(f"[dim]{session.describe()}[/]")
+        if web:
+            console.print(
+                f"[bold bright_cyan]web dashboard[/]  {session.renderer.url}\n"
+                "[dim]The browser refreshes automatically. Press Ctrl+C here to stop it.[/]"
+            )
         asyncio.run(session.run())
     except KeyboardInterrupt:
         pass

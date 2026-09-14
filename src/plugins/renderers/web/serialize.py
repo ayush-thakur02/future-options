@@ -49,12 +49,16 @@ def serialize_snapshot(
 
 
 def _leg(leg: LegSnapshot, *, max_candles: int) -> dict[str, Any]:
+    verdict = _json(leg.verdict)
+    if leg.verdict is not None:
+        verdict["edge_bps"] = _number(leg.verdict.edge_bps)
+        verdict["is_trade"] = leg.verdict.is_trade
     return {
         "label": leg.label,
         "kind": leg.kind,
         "strike": _number(leg.strike),
         "greeks": _json(leg.greeks),
-        "verdict": _json(leg.verdict),
+        "verdict": verdict,
         "market": _market(leg.snapshot, max_candles=max_candles),
     }
 

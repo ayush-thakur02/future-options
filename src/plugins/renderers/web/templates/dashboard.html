@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-refresh-ms="{{ refresh_ms }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NIFTY PULSE // realtime terminal</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="prompt">&gt;_</span>
+      <div>
+        <h1>NIFTY PULSE</h1>
+        <p>REALTIME MARKET RESEARCH TERMINAL</p>
+      </div>
+    </div>
+    <div class="connection">
+      <span id="connection-dot" class="dot waiting"></span>
+      <span id="connection-text">CONNECTING</span>
+      <span class="divider">//</span>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="overview" class="metric-grid" aria-label="Market overview"></section>
+
+    <section class="section-block">
+      <div class="section-heading">
+        <h2><span>01</span> LIVE INSTRUMENTS</h2>
+        <p>PRINTED CANDLES <b class="up">■</b> / <b class="down">■</b> · PROJECTED <b class="projected">■</b></p>
+      </div>
+      <div id="leg-grid" class="leg-grid"></div>
+    </section>
+
+    <section class="split-grid">
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>02</span> REALTIME AUTO-AI</h2>
+          <small>UPDATES AFTER EXACT TARGET CLOSE</small>
+        </div>
+        <div id="ai-scorecards" class="table-scroll"></div>
+      </article>
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>03</span> LIVE PREDICTIONS</h2>
+          <small>RESEARCH ONLY · NO ORDER PLACEMENT</small>
+        </div>
+        <div id="live-predictions" class="table-scroll"></div>
+      </article>
+    </section>
+
+    <section class="split-grid wide-left">
+      <article class="terminal-card">
+        <div class="card-title with-control">
+          <div>
+            <h2><span>04</span> STRATEGY MATRIX</h2>
+            <small>ACTIVE STATE + FORWARD SUCCESS/FAILURE</small>
+          </div>
+          <label class="search-label">
+            <span>FILTER</span>
+            <input id="strategy-filter" type="search" placeholder="strategy / reason" autocomplete="off">
+          </label>
+        </div>
+        <div id="strategies" class="table-scroll tall"></div>
+      </article>
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>05</span> INDICATOR STATE</h2>
+          <small>LATEST CLOSED BAR</small>
+        </div>
+        <div id="indicators" class="indicator-grid"></div>
+      </article>
+    </section>
+
+    <section class="split-grid">
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>06</span> FORWARD SCORE</h2>
+          <small>FROZEN PROJECTIONS VS ACTUAL CLOSE</small>
+        </div>
+        <div id="forward-scores" class="table-scroll"></div>
+      </article>
+      <article class="terminal-card">
+        <div class="card-title">
+          <h2><span>07</span> SYSTEM / COST STATE</h2>
+          <small>DATA FRESHNESS + RESEARCH QUEUES</small>
+        </div>
+        <div id="system-state" class="system-grid"></div>
+      </article>
+    </section>
+  </main>
+
+  <footer>
+    <span>NIFTY PULSE // LOCAL READ-ONLY DASHBOARD</span>
+    <span id="last-update">AWAITING FIRST SNAPSHOT</span>
+  </footer>
+
+  <div id="loading" class="loading-panel">
+    <div class="loading-mark">&gt;_</div>
+    <p>WARMING MARKET STATE<span class="blink">█</span></p>
+  </div>
+
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</body>
+</html>

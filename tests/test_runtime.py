@@ -415,6 +415,27 @@ async def test_the_render_loop_draws_inside_the_live_block(offline_session) -> N
     assert renderer.events[-1] == "closed", "the screen must be handed back"
 
 
+async def test_non_terminal_renderer_does_not_take_over_keyboard(offline_session, monkeypatch) -> None:
+    renderer = RecordingRenderer()
+    renderer.uses_terminal_keys = False
+    session = Session(
+        kernel=offline_session.kernel,
+        config=SessionConfig(offline=True, days=2, refresh=0.05),
+    )
+    session.renderer = renderer
+
+    def unexpected_terminal_keys():
+        raise AssertionError("a web renderer must leave terminal input alone")
+
+    monkeypatch.setattr("runtime.session.terminal_keys", unexpected_terminal_keys)
+    task = asyncio.create_task(session._render_loop())
+    await asyncio.sleep(0.12)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert "draw" in renderer.events
+
+
 def test_session_uses_the_broker_when_it_can() -> None:
     """With no credentials the session must fall back rather than raise."""
 
