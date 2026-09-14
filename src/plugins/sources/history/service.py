@@ -22,6 +22,7 @@ from core.calendar import IST
 from core.settings import Settings
 
 from .. import DataUnavailable
+from .archive import RealtimeArchive
 from .partitions import PartitionedStore
 
 
@@ -33,10 +34,12 @@ class HistorySource:
         settings: Settings,
         broker: Any | None = None,
         offline: bool = False,
+        archive_ticks: bool = True,
     ) -> None:
         self.settings = settings
         self.broker = broker
         self.offline = offline
+        self.archive_ticks = archive_ticks
         self.store = PartitionedStore(
             settings.data_dir,
             settings.instrument_key,
@@ -45,6 +48,7 @@ class HistorySource:
         # Anyone who ran the single-file store has history in it; importing it on
         # first use is the difference between a migration and a disappearance.
         self.store.migrate_legacy()
+        self.archive = RealtimeArchive(settings.data_dir, settings.instrument_key)
 
     # ------------------------------------------------------------- credentials
 
@@ -73,6 +77,8 @@ class HistorySource:
 
     def load_cached(self) -> pd.DataFrame:
         """Everything in the store. Empty if the store does not exist yet."""
+        if self.archive_ticks:
+            self.archive.materialize(self.store)
         return self.store.load()
 
     def load_history(
@@ -123,7 +129,10 @@ class HistorySource:
         # the fetch path work at all — it did not, before this.
         target_start = (now - pd.Timedelta(days=days)).normalize().date()
 
-        if cached.empty:
+        has_requested_start = (
+            not cached.empty and cached.index[0].normalize().date() <= target_start
+        )
+        if not has_requested_start:
             fetch_start = target_start
         else:
             last = cached.index[-1]

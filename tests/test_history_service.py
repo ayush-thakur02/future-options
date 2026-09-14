@@ -156,14 +156,31 @@ def test_load_cached_never_raises_on_an_empty_store(settings) -> None:
 
 def test_a_current_cache_is_not_refetched(settings, recent_bars) -> None:
     """The promise of the whole cache: a morning run with nothing new costs one call."""
-    seeded(settings, recent_bars)
+    requested_start = (
+        pd.Timestamp.now(tz=IST) - pd.Timedelta(days=5)
+    ).normalize()
+    first = recent_bars.iloc[[0]].copy()
+    first.index = pd.DatetimeIndex([requested_start + pd.Timedelta(hours=9, minutes=15)])
+    cached = normalize_candles(pd.concat([first, recent_bars]))
+    seeded(settings, cached)
     broker = FakeBroker(rest=FakeREST())
     source = HistorySource(settings, broker=broker)
 
     loaded = source.load_history(days=5, quiet=True)
 
-    assert len(loaded) == len(recent_bars)
+    assert len(loaded) == len(cached)
     assert broker._rest.calls == [], "a current cache must not hit the provider"
+
+
+def test_a_current_tail_with_missing_requested_history_is_backfilled(
+    settings, recent_bars
+) -> None:
+    seeded(settings, recent_bars)
+    broker = FakeBroker(rest=FakeREST())
+
+    HistorySource(settings, broker=broker).load_history(days=5, quiet=True)
+
+    assert broker._rest.calls[0][0] == "history"
 
 
 def test_a_stale_cache_fetches_the_tail_and_stores_it(settings, bars) -> None:

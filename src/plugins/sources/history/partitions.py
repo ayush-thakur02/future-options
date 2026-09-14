@@ -28,9 +28,12 @@ which is the right trade for data that is written once per day and read constant
 
 from __future__ import annotations
 
+import os
+import tempfile
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from threading import Lock, RLock
 
 import pandas as pd
 
@@ -45,6 +48,16 @@ CHAIN = "chain"
 DAY = "day"
 HOUR = "hour"
 COMPRESSION = "zstd"
+
+_LOCKS_GUARD = Lock()
+_PARTITION_LOCKS: dict[Path, RLock] = {}
+
+
+def _partition_lock(path: Path) -> RLock:
+    """One in-process lock per shard, so concurrent writers cannot lose rows."""
+    resolved = path.resolve()
+    with _LOCKS_GUARD:
+        return _PARTITION_LOCKS.setdefault(resolved, RLock())
 
 
 def normalize_frames(frame: pd.DataFrame) -> pd.DataFrame:
@@ -65,8 +78,8 @@ def normalize_frames(frame: pd.DataFrame) -> pd.DataFrame:
         return empty
     out = frame.copy()
     out.index = _as_ist(out.index)
-    out = out.sort_index()
-    return out[~out.index.duplicated(keep="last")]
+    out = out.sort_index(kind="stable")
+    return _deduplicate(out)
 
 
 def index_stamps(index) -> pd.DatetimeIndex:
@@ -197,10 +210,7 @@ class PartitionedStore:
 
     def coverage(self) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
         """First and last timestamp, from the manifest when it has them."""
-        if self.shard == HOUR:
-            first, last = self.manifest.coverage(self.dataset, self.key)
-            if first and last:
-                return pd.Timestamp(first), pd.Timestamp(last)
+        self._recover_manifest_if_needed()
         first, last = self.manifest.coverage(self.dataset, self.key)
         if first and last:
             return pd.Timestamp(first), pd.Timestamp(last)
@@ -210,10 +220,11 @@ class PartitionedStore:
         return frame.index[0], frame.index[-1]
 
     def row_count(self) -> int:
+        self._recover_manifest_if_needed()
         rows = self.manifest.row_count(self.dataset, self.key)
         if rows:
             return rows
-        return sum(len(pd.read_parquet(path, columns=["close"])) for path in self.partitions())
+        return sum(len(pd.read_parquet(path)) for path in self.partitions())
 
     def sessions(self) -> int:
         return len(self.partitions())
@@ -234,10 +245,15 @@ class PartitionedStore:
         incoming = self.normalizer(frame)
         written = 0
         touched: list[Path] = []
+        # If the process stops after a shard rename and before its manifest
+        # update, the dirty bit makes the next reader rebuild the advisory index
+        # from the parquet files. The files remain the source of truth.
+        self.manifest.update(self.dataset, self.key, dirty=True, instrument=self.instrument)
         for _, shard_frame in incoming.groupby(self._shard_series(incoming)):
             path = self.path_for(shard_frame.index[0])
-            merged = _merge_partition(path, shard_frame)
-            _write_partition(path, merged, self.compression)
+            with _partition_lock(path):
+                merged = _merge_partition(path, shard_frame)
+                _write_partition(path, merged, self.compression)
             touched.append(path)
             written += len(shard_frame)
 
@@ -295,21 +311,42 @@ class PartitionedStore:
         rows = sum(int(shard["rows"]) for shard in shards.values())
         firsts = [shard["first"] for shard in shards.values() if shard.get("first")]
         lasts = [shard["last"] for shard in shards.values() if shard.get("last")]
+        columns = sorted(
+            {column for shard in shards.values() for column in shard.get("columns", [])}
+        )
+        first = min(firsts) if firsts else None
+        last = max(lasts) if lasts else None
         self.manifest.update(
             self.dataset,
             self.key,
             rows=rows,
             sessions=len(shards),
-            first=min(firsts) if firsts else None,
-            last=max(lasts) if lasts else None,
+            first=first,
+            last=last,
+            coverage={"first": first, "last": last, "rows": rows, "shards": len(shards)},
+            bytes=sum(int(shard.get("bytes", 0) or 0) for shard in shards.values()),
             shards=shards,
             instrument=self.instrument,
             bar_minutes=self.bar_minutes,
+            dirty=False,
+            columns=columns,
+            storage={
+                "format": "parquet",
+                "compression": self.compression,
+                "partition": self.shard,
+                "deduplication": "timestamp+event_id" if "event_id" in columns else "index",
+            },
         )
 
     def _refresh_manifest(self) -> None:
         """Recompute everything from the files. Used after a wholesale replace."""
         self._update_manifest(self.partitions())
+
+    def _recover_manifest_if_needed(self) -> None:
+        """Repair an absent/dirty entry after an interrupted shard commit."""
+        entry = self.manifest.dataset(self.dataset, self.key)
+        if (not entry or entry.get("dirty")) and self.exists():
+            self._refresh_manifest()
 
     def _shard_key(self, path: Path) -> str:
         relative = path.relative_to(self.base)
@@ -366,6 +403,8 @@ def _shard_stats(path: Path) -> dict | None:
         "rows": len(stamps),
         "first": stamps[0].isoformat(),
         "last": stamps[-1].isoformat(),
+        "bytes": path.stat().st_size,
+        "columns": list(frame.columns),
     }
 
 
@@ -375,13 +414,46 @@ def _merge_partition(path: Path, incoming: pd.DataFrame) -> pd.DataFrame:
     existing = pd.read_parquet(path)
     existing.index = _as_ist(existing.index)
     combined = pd.concat([existing, incoming])
-    combined = combined[~combined.index.duplicated(keep="last")]
-    return combined.sort_index()
+    return _deduplicate(combined.sort_index(kind="stable"))
 
 
 def _write_partition(path: Path, frame: pd.DataFrame, compression: str) -> None:
+    """Commit a parquet shard atomically, leaving the old shard on failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(path, compression=compression)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.stem}-", suffix=".parquet.tmp", dir=path.parent)
+    os.close(fd)
+    try:
+        frame.to_parquet(temporary, compression=compression)
+        with open(temporary, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _deduplicate(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep exact tick events while retaining distinct updates at one timestamp."""
+    if frame.empty:
+        return frame
+    if "event_id" not in frame.columns:
+        return frame[~frame.index.duplicated(keep="last")]
+
+    stamps = index_stamps(frame.index)
+    event_ids = frame["event_id"].astype("string")
+    modern = event_ids.notna()
+    # Old tape shards used timestamp-only identity. When a recovered journal
+    # carries the same timestamp, prefer the richer event-id row once.
+    modern_stamps = set(stamps[modern])
+    legacy_duplicate = (~modern) & stamps.isin(modern_stamps)
+    keys = pd.MultiIndex.from_arrays([stamps, event_ids.fillna("")])
+    keep = ~keys.duplicated(keep="last") & ~legacy_duplicate
+    return frame[keep]
 
 
 def _as_ist(index):

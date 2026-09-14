@@ -15,17 +15,27 @@ from .service import HistorySource
 MANIFEST = PluginManifest(
     name="history",
     kind=PluginKind.SOURCE,
-    description="Local parquet candle cache, topped up from the broker",
+    description="Crash-recoverable local tape and candle cache, topped up from the broker",
     provides=("history",),
     requires=("broker",),
-    tags=("history", "cache", "offline"),
-    params={"offline": False},
+    tags=("history", "cache", "offline", "archive", "recovery"),
+    params={"offline": False, "archive_ticks": True},
 )
 
 
-def build(ctx: PluginContext, offline: bool = False, **params) -> HistorySource:
+def build(
+    ctx: PluginContext,
+    offline: bool = False,
+    archive_ticks: bool = True,
+    **params,
+) -> HistorySource:
     """Build the cache. The broker is optional at runtime: without a token the
     cache simply serves whatever it already holds, or generated bars offline.
     """
     broker = ctx.capability("broker") if ctx.has_capability("broker") else None
-    return HistorySource(settings=ctx.settings, broker=broker, offline=offline)
+    return HistorySource(
+        settings=ctx.settings,
+        broker=broker,
+        offline=offline,
+        archive_ticks=archive_ticks,
+    )

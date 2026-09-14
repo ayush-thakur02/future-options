@@ -7,6 +7,7 @@
 * :class:`~plugins.sources.history.service.HistorySource` — cache + fetch policy
 """
 
+from .archive import RealtimeArchive, ticks_to_candles
 from .manifest import StoreManifest
 from .partitions import (
     CANDLES,
@@ -31,6 +32,7 @@ __all__ = [
     "ChainRecorder",
     "HistorySource",
     "PartitionedStore",
+    "RealtimeArchive",
     "StoreManifest",
     "TickRecorder",
     "align_to_session",
@@ -38,4 +40,5 @@ __all__ = [
     "normalize_frames",
     "resample_ohlcv",
     "safe_name",
+    "ticks_to_candles",
 ]

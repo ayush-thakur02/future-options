@@ -13,6 +13,7 @@ path to find out.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
@@ -21,8 +22,6 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
-
-import fcntl
 
 from core.calendar import IST
 
