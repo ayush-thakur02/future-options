@@ -1,27 +1,12 @@
-"""The call/index/put board: several instruments driven by one tick stream.
-
-The index has a feed of its own. A leg does **not** — its premium is a function of
-the index price, the strike, the time left and the implied vol. So deriving a leg
-tick from an index tick is not an approximation standing in for a missing feed; it
-is the definition of what a leg is worth. The practical consequence is that the
-three charts cannot disagree about what the market did, which is the failure mode
-a multi-instrument display has to avoid above all others.
-
-Each instrument gets its own :class:`~runtime.engine.Engine` — its own bars, its
-own features, its own strategies and its own projected path — and all of them are
-refreshed by one clock. A leg engine is an engine: nothing about it is special
-because its prices happen to be premiums.
-
-Legs are re-struck when the spot walks away from them. A roll is a new instrument,
-so the leg's history is regenerated from the index history at the new strike and
-its projection scorecard is reset — scoring a projection made about one strike
-against the bars of another would be a quiet lie.
+"""Independent index/call/put engines. Live options use exchange ticks;
+calculated premiums are restricted to the explicitly offline simulation.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -51,6 +36,7 @@ class BoardLeg:
     step: float = 50.0
     greeks: dict = field(default_factory=dict)
     rolls: int = 0
+    instrument_key: str = ""
 
     @property
     def is_option(self) -> bool:
@@ -79,6 +65,8 @@ class MarketBoard:
         roll_strikes: float = ROLL_STRIKES,
         history_bars: int = FEATURE_WINDOW,
         logger: logging.Logger | None = None,
+        live: bool = False,
+        days: int = 15,
     ) -> None:
         self.kernel = kernel
         self.settings: Settings = kernel.settings
@@ -90,8 +78,14 @@ class MarketBoard:
         # thrown away — three engines' worth of it, on every start and every roll.
         self.history_bars = int(history_bars)
         self.log = logger or logging.getLogger("niftypulse.board")
+        self.live = live
+        self.executor = ThreadPoolExecutor(max_workers=self.settings.worker_count, thread_name_prefix="instrument")
 
         self.source = kernel.capability("option_chain") if kernel.registry.capabilities().get("option_chain") else None
+        if live:
+            from plugins.sources.upstox.options import LiveOptionSource
+
+            self.source = LiveOptionSource(kernel.build("source:upstox"), self.executor, days)
         self.advisor = kernel.capability("advisory") if kernel.registry.capabilities().get("advisory") else None
         self.legs: list[BoardLeg] = []
         self.index_bars: pd.DataFrame = pd.DataFrame()
@@ -121,8 +115,26 @@ class MarketBoard:
             self.kernel,
             bar_minutes=self.bar_minutes,
             symbol=self.settings.symbol,
+            instrument_key=self.settings.instrument_key,
+            source="Upstox" if self.live else "simulation",
         ).bootstrap(history=index_bars)
-        self.legs = [BoardLeg(label=INDEX_LABEL, kind="index", engine=index_engine)]
+        self.legs = [BoardLeg(label=INDEX_LABEL, kind="index", engine=index_engine,
+                              instrument_key=self.settings.instrument_key)]
+
+        if self.live:
+            selected = self.source.select(index_bars)
+            self.expiry = self.source.expiry()
+            def warm(item):
+                kind, contract = item
+                engine = Engine(self.kernel, bar_minutes=self.bar_minutes, symbol=contract.symbol,
+                                instrument_key=contract.instrument_key, source="Upstox")
+                engine.bootstrap(history=contract.bars)
+                return BoardLeg(label="CALL" if kind == "CE" else "PUT", kind=kind,
+                                engine=engine, strike=contract.strike, step=self.source.strike_step,
+                                greeks=contract.greeks, instrument_key=contract.instrument_key)
+            self.legs.extend(self.executor.map(warm, sorted(selected.items())))
+            self.refresh_projection()
+            return self
 
         if self.source is None:
             self.log.info("no option chain capability; the board will show the index alone")
@@ -151,6 +163,7 @@ class MarketBoard:
             self.kernel,
             bar_minutes=self.bar_minutes,
             symbol=f"{self.settings.symbol} {chain_leg.strike:,.0f} {kind}",
+            instrument_key=f"SIM|{self.settings.symbol}:{chain_leg.strike}:{kind}:{self.expiry}",
         ).bootstrap(history=chain_leg.bars)
 
         return BoardLeg(
@@ -179,7 +192,18 @@ class MarketBoard:
     def on_tick(self, tick: Tick) -> bool:
         """Feed one index tick, and the leg ticks it implies."""
         self.ticks += 1
+        if self.live:
+            for leg in self.legs:
+                if leg.instrument_key == tick.instrument_key:
+                    if tick.greeks:
+                        leg.greeks.update({k: v for k, v in tick.greeks.items() if k not in {"iv", "theta"}})
+                        leg.greeks["iv"] = tick.greeks.get("iv", 0) / 100.0
+                        leg.greeks["theta_per_minute"] = tick.greeks.get("theta", 0) / 1440.0
+                    leg.greeks["premium"] = tick.ltp
+                    return leg.engine.on_tick(tick)
+            return False
         closed = self.index_engine.on_tick(tick)
+        self.index_bars = self.index_engine.history
         spot = tick.ltp or tick.mid
 
         for leg in self.legs[1:]:
@@ -205,7 +229,7 @@ class MarketBoard:
         leg.greeks = {**leg.greeks, **self._quote_greeks(quote)}
         if quote.premium <= 0:
             return None
-        return Tick(ts=index_tick.ts, ltp=quote.premium, ltq=index_tick.ltq, close_prev=index_tick.close_prev)
+        return Tick(ts=index_tick.ts, ltp=quote.premium, ltq=index_tick.ltq, close_prev=leg.engine.prev_close)
 
     def _quote_greeks(self, quote) -> dict:
         return {
@@ -228,7 +252,7 @@ class MarketBoard:
         legs at the money, which is what makes the call and the put comparable
         and what keeps the panel's greeks meaningful.
         """
-        if self.source is None or spot <= 0:
+        if self.live or self.source is None or spot <= 0:
             return []
 
         target = self.source.atm_strike(spot)
@@ -237,20 +261,16 @@ class MarketBoard:
             if abs(spot - leg.strike) < self.roll_strikes * leg.step:
                 continue
 
-            chain_leg = self.source.legs(self.index_bars, spot=spot).get(leg.kind)
-            if chain_leg is None or chain_leg.bars.empty:
+            replacement = self._make_leg(leg.kind, leg.label, self.index_bars, spot)
+            if replacement is None:
                 continue
-
-            leg.engine.history = pd.DataFrame()
-            leg.engine.bootstrap(history=chain_leg.bars)
-            # A roll is a different instrument: a projection made about the old
-            # strike must not be scored against the new one's bars.
-            if leg.engine.forecaster is not None:
-                leg.engine.forecaster.tracker.reset()
-                leg.engine.forecaster.momentum.reset()
-            leg.engine.projections = []
-            leg.strike = chain_leg.strike
-            leg.greeks = self._greeks(chain_leg)
+            research = leg.engine.forecaster and leg.engine.forecaster.tracker.journal is not None
+            leg.engine.close()
+            leg.engine = replacement.engine
+            if research:
+                leg.engine.enable_research()
+            leg.strike = replacement.strike
+            leg.greeks = replacement.greeks
             leg.rolls += 1
             rolled.append(f"{leg.label} → {leg.strike:,.0f}")
 
@@ -262,12 +282,15 @@ class MarketBoard:
 
     def refresh_projection(self) -> bool:
         """Rebuild every instrument's path on the shared clock."""
-        produced = self.index_engine.refresh_projection()
-        for leg in self.legs[1:]:
-            leg.engine.refresh_projection()
+        produced = list(self.executor.map(lambda leg: leg.engine.refresh_projection(), self.legs))
         if self.on_refresh is not None:
             self.on_refresh()
-        return produced
+        return any(produced)
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        for leg in self.legs:
+            leg.engine.close()
 
     def publish(self) -> None:
         for leg in self.legs:

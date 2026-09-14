@@ -39,6 +39,9 @@ class CandleAggregator:
         self._current: dict | None = None
         self.tick_count = 0
         self.last_tick: Tick | None = None
+        self._cumulative_volume: float | None = None
+        self._volume_day = None
+        self._volume_delta = 0.0
 
     @property
     def current_bar(self) -> dict | None:
@@ -46,6 +49,16 @@ class CandleAggregator:
 
     def on_tick(self, tick: Tick) -> dict | None:
         """Feed a tick. Returns the previous bar when a new one begins."""
+        if self.last_tick is not None and tick.ts < self.last_tick.ts:
+            return None
+        day = tick.ts.astimezone(IST).date()
+        if self._volume_day != day:
+            self._cumulative_volume = None
+            self._volume_day = day
+        current_volume = float(tick.volume_traded)
+        self._volume_delta = max(current_volume - self._cumulative_volume, 0) if self._cumulative_volume is not None and current_volume > 0 else 0.0
+        if current_volume > 0:
+            self._cumulative_volume = current_volume
         self.tick_count += 1
         self.last_tick = tick
 
@@ -73,7 +86,7 @@ class CandleAggregator:
             "high": price,
             "low": price,
             "close": price,
-            "volume": float(tick.volume_traded),
+            "volume": self._volume_delta,
             "oi": float(tick.open_interest),
             "tick_count": 1,
             "buy_qty": float(tick.total_buy_qty),
@@ -88,9 +101,9 @@ class CandleAggregator:
         bar["low"] = min(bar["low"], price)
         bar["close"] = price
         bar["tick_count"] += 1
-        # vtt/oi are cumulative for the day, so the latest value is authoritative.
-        if tick.volume_traded:
-            bar["volume"] = float(tick.volume_traded)
+        # vtt is daily cumulative; historical candle volume is per bar.
+        # Keeping the daily total here corrupts VWAP and train/serve parity.
+        bar["volume"] += self._volume_delta
         if tick.open_interest:
             bar["oi"] = float(tick.open_interest)
         bar["buy_qty"] = float(tick.total_buy_qty)

@@ -27,6 +27,7 @@ from kernel import Kernel
 from .bars import BarLoader
 from .board import MarketBoard
 from .engine import Engine
+from .keyboard import terminal_keys
 from .nowcast import NowcastLoop
 
 DEFAULT_DAYS = 15
@@ -55,6 +56,7 @@ class SessionConfig:
     # store would mix invented prices into the only dataset that cannot be
     # re-fetched.
     record: bool = True
+    research: bool = True
 
 
 @dataclass
@@ -79,11 +81,16 @@ class Session:
 
         self.broker = self.kernel.build("source:upstox")
         self.live = not self.config.offline and bool(getattr(self.broker, "is_configured", False))
+        self.feed_status = "initialising"
+        self.tick_recorders = {}
+        self._tick_queue = None
+        self._fatal_error = None
 
         self.engine = Engine(
             self.kernel,
             bar_minutes=settings.bar_minutes,
             calendar=TradingCalendar(),
+            source="Upstox" if self.live else "simulation",
         )
         self.renderer = self._build_renderer()
         self.loader = BarLoader(self.kernel, logger=self.logger)
@@ -109,13 +116,35 @@ class Session:
         report = progress or (lambda _message: None)
         started = time.perf_counter()
 
+        if not self.config.offline:
+            if not self.live:
+                from plugins.sources import DataUnavailable
+                raise DataUnavailable("Live dashboard requires a valid login. Run `niftypulse login` or explicitly use --offline.")
+            report("checking Upstox authentication")
+            self.broker.validate_auth()
+            report(self.broker.auth_status)
+
         report("loading bars")
-        bars = self.loader.load(
-            days=self.config.days,
-            refresh=self.config.refresh_history and self.live,
-            quiet=False,
-            offline=self.config.offline,
-        )
+        if self.live:
+            # Fetch a clean live warm-up. Older versions seeded simulated bars in
+            # the shared cache, so its provenance cannot be trusted for learning.
+            from core.bars import normalize_candles
+            from core.calendar import IST
+            from plugins.sources.history.resample import resample_ohlcv
+
+            rest = self.broker.rest()
+            history = rest.fetch_minute_history(self.kernel.settings.instrument_key, days=self.config.days)
+            today = rest.fetch_intraday(self.kernel.settings.instrument_key, "minutes", 1)
+            bars = resample_ohlcv(normalize_candles(pd.concat([history, today])), self.kernel.settings.bar_minutes)
+            cutoff = pd.Timestamp.now(tz=IST) - pd.Timedelta(minutes=self.kernel.settings.bar_minutes)
+            bars = bars[bars.index <= cutoff]
+            if bars.empty:
+                raise RuntimeError("Upstox returned no historical bars; cannot warm a live research session.")
+        else:
+            bars = self.loader.load(days=self.config.days, refresh=False, quiet=False, offline=True)
+            from plugins.sources.history.resample import resample_ohlcv
+
+            bars = resample_ohlcv(bars, self.kernel.settings.bar_minutes)
         report(f"  {len(bars):,} bars in {time.perf_counter() - started:.1f}s")
 
         warm_started = time.perf_counter()
@@ -125,6 +154,8 @@ class Session:
                 self.kernel,
                 bar_minutes=self.kernel.settings.bar_minutes,
                 logger=self.logger,
+                live=self.live,
+                days=self.config.days,
             ).build(bars)
             # The index engine of the board *is* this session's engine, so every
             # other part of the runtime — the feed, the clock, the renderer —
@@ -141,6 +172,11 @@ class Session:
             self.renderer.forecaster = self.engine.forecaster
 
         self._start_recording()
+        if self.config.research:
+            engines = [leg.engine for leg in self.board.legs] if self.board else [self.engine]
+            for engine in engines:
+                engine.enable_research()
+        self.feed_status = "authenticated · awaiting ticks" if self.live else "SIMULATION"
         report(f"ready in {time.perf_counter() - started:.1f}s")
         return self
 
@@ -160,15 +196,11 @@ class Session:
         )
 
         settings = self.kernel.settings
-        self.tick_recorder = TickRecorder(
-            store=PartitionedStore(
-                settings.data_dir,
-                settings.instrument_key,
-                dataset=TICKS,
-                shard=HOUR,
-                normalizer=normalize_frames,
-            )
-        )
+        keys = [leg.instrument_key for leg in self.board.legs] if self.board else [settings.instrument_key]
+        for key in keys:
+            self.tick_recorders[key] = TickRecorder(store=PartitionedStore(
+                settings.data_dir, key, dataset=TICKS, shard=HOUR, normalizer=normalize_frames))
+        self.tick_recorder = self.tick_recorders[settings.instrument_key]
         self.chain_recorder = ChainRecorder(
             store=PartitionedStore(
                 settings.data_dir,
@@ -178,8 +210,6 @@ class Session:
                 normalizer=normalize_frames,
             )
         )
-        if self.board is not None:
-            self.board.on_refresh = self._sample_chain
         self.logger.info("recording ticks and chain samples under %s", settings.data_dir)
 
     def _sample_chain(self) -> None:
@@ -190,6 +220,9 @@ class Session:
         if not self.chain_recorder.due(now):
             return
         try:
+            refresh = getattr(self.source_chain, "refresh_chain", None)
+            if callable(refresh):
+                refresh()
             chain = self.source_chain.chain(self.engine.last_price, bars=self.engine.market_bars())
         except Exception as exc:  # noqa: BLE001 — a failed sample is not a failed session
             self.logger.debug("chain sample failed: %s", exc)
@@ -203,14 +236,14 @@ class Session:
     def describe(self) -> str:
         source = "upstox (live)" if self.live else "simulated"
         legs = f" · {self.board.describe()}" if self.board is not None else ""
-        strategies = self.engine.catalog.summary()
+        strategies = f"{len(self.engine.signals)} research strategies ({len(self.engine.catalog)} available)"
         predictor = self.engine.predictor
         models = (
             f"{len(predictor.loaded_horizons)} horizons" if predictor is not None and predictor.is_ready else "none"
         )
         return (
             f"source {source} · {self.config.timeframe or self.kernel.settings.bar_minutes}m bars · "
-            f"{strategies} · models {models}{legs}"
+            f"{strategies} · batch models {models} · {self.kernel.settings.worker_count} CPU workers{legs}"
         )
 
     # ------------------------------------------------------------------ drives
@@ -226,6 +259,7 @@ class Session:
         if self.engine.history.empty:
             raise RuntimeError("no bars loaded; check the source and the cache")
 
+        self._tick_queue = asyncio.Queue(maxsize=20_000)
         feed = self._build_feed()
         # The clock is driven by whatever owns the projections: a board refreshes
         # every leg, an engine refreshes itself. Both expose the same two methods.
@@ -233,6 +267,9 @@ class Session:
         nowcast = NowcastLoop(clock_target, interval=self.config.nowcast_interval, logger=self.logger)
 
         tasks = [asyncio.create_task(nowcast.run(), name="nowcast")]
+        tasks.append(asyncio.create_task(self._consume_ticks(), name="instrument-work"))
+        if self.chain_recorder is not None:
+            tasks.append(asyncio.create_task(self._chain_loop(), name="chain-recording"))
         if feed is not None:
             tasks.append(asyncio.create_task(self._drive(feed), name="feed"))
 
@@ -243,14 +280,19 @@ class Session:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.get_running_loop().shutdown_default_executor()
             self.stop_recording()
+            if self.board is not None:
+                self.board.close()
+            else:
+                self.engine.close()
             close = getattr(self.broker, "close", None)
             if callable(close):
                 close()
 
     def stop_recording(self) -> None:
         """Flush whatever is buffered. Called on exit and safe to call twice."""
-        for recorder in (self.tick_recorder, self.chain_recorder):
+        for recorder in (*self.tick_recorders.values(), self.chain_recorder):
             flush = getattr(recorder, "close", None)
             if callable(flush):
                 try:
@@ -267,6 +309,12 @@ class Session:
         except Exception as exc:  # noqa: BLE001 — one dead feed must not kill the UI
             self.logger.warning("feed stopped: %s", exc)
             self.engine.status = f"feed error: {str(exc)[:60]}"
+            self.feed_status = self.engine.status
+
+    async def _chain_loop(self) -> None:
+        while True:
+            await asyncio.to_thread(self._sample_chain)
+            await asyncio.sleep(10)
 
     def _build_feed(self):
         """The one line that separates a live run from a replay."""
@@ -275,6 +323,7 @@ class Session:
             return self.broker.feed(
                 on_tick=self._on_tick,
                 on_status=self._on_status,
+                instrument_keys=[leg.instrument_key for leg in self.board.legs] if self.board else None,
             )
 
         market = self.kernel.build("source:simulated", days=self.config.days)
@@ -287,6 +336,19 @@ class Session:
             bar_minutes=self.kernel.settings.bar_minutes,
             rebase_to=self.engine.last_price or None,
         )
+        # Continue AFTER the warm-up; replaying timestamps already in history
+        # would let the online model see those candles before forecasting them.
+        calendar = self.engine.calendar
+        moment = self.engine.history.index[-1].to_pydatetime()
+        stamps = []
+        from core.calendar import SESSION_CLOSE
+        for _ in range(len(bars)):
+            moment += pd.Timedelta(minutes=self.engine.bar_minutes)
+            if moment.time() >= SESSION_CLOSE or not calendar.is_trading_day(moment.date()):
+                moment = calendar.next_open(moment)
+            stamps.append(moment)
+        bars = bars.copy()
+        bars.index = pd.DatetimeIndex(stamps, name="ts")
         self.engine.status = "replaying"
         return market.feed(
             bars=bars,
@@ -299,25 +361,67 @@ class Session:
         )
 
     def _on_tick(self, tick) -> None:
-        """One index tick in: record it, then let the board derive the legs."""
-        if self.tick_recorder is not None:
-            self.tick_recorder.record(tick)
+        """Keep the socket reader cheap; processing runs on instrument workers."""
+        if self._tick_queue is not None:
+            try:
+                self._tick_queue.put_nowait(tick)
+            except asyncio.QueueFull:
+                self._fatal_error = "Tick queue full; restart to resync candles."
+                raise RuntimeError("Tick processing overloaded: queue full; restart to resync candles.") from None
+            return
+        self._process_tick(tick)
+
+    def _process_tick(self, tick) -> None:
+        recorder = self.tick_recorders.get(tick.instrument_key or self.kernel.settings.instrument_key)
+        if recorder is not None:
+            recorder.record(tick)
         if self.board is not None:
             self.board.on_tick(tick)
         else:
             self.engine.on_tick(tick)
 
+    async def _consume_ticks(self) -> None:
+        while True:
+            tick = await self._tick_queue.get()
+            batch = [tick]
+            while not self._tick_queue.empty() and len(batch) < 300:
+                batch.append(self._tick_queue.get_nowait())
+            grouped = {}
+            for item in batch:
+                grouped.setdefault(item.instrument_key, []).append(item)
+            def consume(items):
+                for item in items:
+                    self._process_tick(item)
+            try:
+                if self.board is not None and self.live:
+                    loop = asyncio.get_running_loop()
+                    await asyncio.gather(*(loop.run_in_executor(self.board.executor, consume, items)
+                                           for items in grouped.values()))
+                else:
+                    await asyncio.to_thread(consume, batch)
+            except Exception as exc:
+                self.feed_status = f"processing error: {type(exc).__name__}; restart to resync"
+                self._fatal_error = self.feed_status
+                self.logger.exception("tick processing stopped")
+                raise
+
     def _on_status(self, payload: dict) -> None:
         kind = payload.get("type")
         if kind == "connected":
-            self.engine.status = "connected" if self.live else "replay"
+            self.feed_status = "connected" if self.live else "SIMULATION"
         elif kind == "disconnected":
-            self.engine.status = "reconnecting" if self.live else "replay finished"
+            self.feed_status = "reconnecting" if self.live else "replay finished"
         elif kind == "market_info":
             segments = payload.get("segments", {})
-            self.engine.status = segments.get("NSE_INDEX", self.engine.status)
-        elif kind == "connection_error":
-            self.engine.status = f"feed error: {str(payload.get('error', ''))[:40]}"
+            self.feed_status = segments.get("NSE_INDEX", self.feed_status)
+            engines = [leg.engine for leg in self.board.legs] if self.board else [self.engine]
+            for engine in engines:
+                engine.market_status = segments.get(engine.instrument_key.split("|")[0])
+            if self.feed_status not in {"NORMAL_OPEN", "PRE_OPEN_START", "PRE_OPEN_END"}:
+                self.feed_status = f"market closed · {self.feed_status}"
+        elif kind in {"connection_error", "auth_error"}:
+            self.feed_status = str(payload.get("error", "feed failed"))
+        self.engine.status = self.feed_status
 
     async def _render_loop(self) -> None:
         """Redraw at the renderer's cadence; the projection keeps its own.
@@ -330,10 +434,21 @@ class Session:
         """
         renderer = self.renderer
         interval = max(float(self.config.refresh), 0.05)
-        with renderer.live():
+        with renderer.live(), terminal_keys() as read_key:
             try:
                 while True:
-                    renderer.live_update(self.engine.snapshot(), self.engine.status)
+                    if self._fatal_error:
+                        raise RuntimeError(self._fatal_error)
+                    key = read_key()
+                    if key.lower() == "q":
+                        return
+                    if key in {"1", "2", "3"}:
+                        renderer.view = {"1": "research", "2": "costs", "3": "indicators"}[key]
+                    if key.lower() == "r":
+                        target = self.board if self.board is not None else self.engine
+                        await asyncio.to_thread(target.refresh_projection)
+                    frame = await asyncio.to_thread(self.snapshot)
+                    renderer.live_update(frame, self.feed_status)
                     await asyncio.sleep(interval)
             except (KeyboardInterrupt, asyncio.CancelledError):
                 pass

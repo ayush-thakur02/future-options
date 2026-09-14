@@ -21,7 +21,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from core.calendar import IST
+from core.calendar import IST, SESSION_CLOSE, SESSION_OPEN
 from core.types import ForecastCandle, Tick
 
 from .candles import DEFAULT_BARS_AHEAD, MICRO_WEIGHT, atr_of, project_candles
@@ -67,6 +67,11 @@ class ProjectionForecaster:
         conviction: float,
         now: datetime | None = None,
         bar_minutes: int = 1,
+        learned_closes: dict[int, float] | None = None,
+        record: bool = True,
+        issued_at=None,
+        context: dict | None = None,
+        session_only: bool = False,
     ) -> list[ForecastCandle]:
         """Rebuild the projected path, and record it for scoring.
 
@@ -92,9 +97,22 @@ class ProjectionForecaster:
             bars_ahead=self.bars_ahead,
             bar_minutes=bar_minutes,
         )
+        if session_only:
+            self.projections = [c for c in self.projections if SESSION_OPEN <= c.ts.time() < SESSION_CLOSE]
+        # Rule/tape estimates retain at least 75% of the path. The separately
+        # trained instrument model contributes only after sufficient samples.
+        for candle in self.projections:
+            if learned_closes and candle.horizon in learned_closes:
+                shifted_close = 0.75 * candle.close + 0.25 * learned_closes[candle.horizon]
+                candle.close = max(shifted_close, 0.01)
+                candle.open = self.anchor if candle.horizon == 1 else self.projections[candle.horizon - 2].close
+                candle.high = max(candle.high, candle.open, candle.close)
+                candle.low = max(min(candle.low, candle.open, candle.close), 0.0)
+                candle.expected_move_bps = candle.change_bps
         self.updated_at = (now or datetime.now(IST)).astimezone(IST)
         self.updates += 1
-        self.tracker.record(self.projections, self.anchor)
+        if record:
+            self.tracker.record(self.projections, self.anchor, issued_at=issued_at, context=context)
         return self.projections
 
     # --------------------------------------------------------------- scoring

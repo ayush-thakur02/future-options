@@ -1,12 +1,22 @@
 # NIFTY Pulse
 
-A scalping platform for NIFTY 50. Streams live ticks from Upstox, runs nineteen
-technical strategies and a trained model, projects the **next three candles every
-second**, and charts the call, the index and the put side by side — with
-transaction costs treated as the primary constraint rather than an afterthought.
+A scalping research platform for NIFTY 50. Streams independent index, call and put
+prices from Upstox, combines ten trader rules with per-instrument online learning,
+and projects the **next three complete candles**. The nineteen-rule catalog and
+batch training/backtests remain available for separate studies.
+
+The live board records first-issued forecasts, then measures wins, misses and
+price error as target candles close. Start with `niftypulse doctor --live` and
+`niftypulse dashboard --workers -1`. Press `1` for research, `2` for costs,
+`3` for indicators, and `q` to exit. Inspect the audit trail with
+`niftypulse research --failures --json`.
+
+See [Live research](docs/live-research.md) for token fallback, actual option
+contracts, online-learning timing, outcome definitions, and parallel execution.
 
 Everything runs locally. No data leaves your machine except the Upstox API calls.
-Everything that arrives is stored, partitioned so it is never fetched twice.
+Live ticks are buffered to instrument partitions and option chains are sampled
+periodically. Live startup fetches a fresh warm-up to establish data provenance.
 
 ---
 
@@ -44,9 +54,8 @@ So the platform acts on it:
 - **Expected move is measured, not assumed.** The conviction-to-move curve is
   fitted from out-of-sample predictions, so "expected move" reflects what the
   model actually demonstrated rather than a volatility heuristic.
-- **The dashboard shows the cost decision first.** Every horizon displays its
-  expected move next to its edge after cost, and says plainly when nothing is
-  worth trading.
+- **The dashboard exposes cost assumptions.** The costs view compares projected
+  option resale premiums with entry prices, spread and configured charges.
 
 Most of the time the correct output is **no trade**. That is the design working.
 
@@ -78,8 +87,8 @@ uv run niftypulse login   # opens the Upstox login, stores the token
 
 Tokens expire at 03:30 IST the next day, so `login` is a once-per-morning step.
 
-**No credentials yet?** Every command accepts `--offline` and runs on generated
-data, so you can exercise the whole pipeline first.
+**No credentials yet?** Commands that load market data accept `--offline` and
+run on generated data, so you can exercise the whole pipeline first.
 
 ## Usage
 

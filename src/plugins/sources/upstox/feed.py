@@ -2,11 +2,9 @@
 
 The feed contract — authorization flow, the four subscription modes, the
 ``Ticker``/``FeedResponse`` shapes — is documented in the installed skill at
-``.agents/skills/upstox/references/websocket.md``. The one detail worth checking
-against your account before going live is the authorize path: this client calls
-``/v3/feed/market-data-feed/authorize``, which is where the v3 proto feed is
-issued, while the SDK's own ``WebsocketApi.get_market_data_feed_authorize`` is
-the v2 endpoint. A 404 here means the account is on the other one.
+``.agents/skills/upstox/references/websocket.md``. This client uses the v3
+authorization endpoint and sends subscription JSON in a binary frame, as
+required by the v3 feed protocol.
 
 Flow: fetch a single-use authorized socket URI, connect, subscribe, then decode
 protobuf frames into :class:`Tick` objects.
@@ -33,6 +31,7 @@ from websockets.exceptions import ConnectionClosed
 from core.calendar import IST
 from core.types import Tick
 
+from .auth import AuthenticationError
 from .proto import MarketDataFeed_pb2 as pb
 
 FEED_AUTHORIZE_URL = "https://api.upstox.com/v3/feed/market-data-feed/authorize"
@@ -57,6 +56,8 @@ def authorize_feed_url(access_token: str, timeout: float = 30.0) -> str:
         headers={"Accept": "application/json", "Authorization": f"Bearer {access_token}"},
         timeout=timeout,
     )
+    if response.status_code == 401:
+        raise AuthenticationError("Upstox rejected the access token (401). Run `niftypulse login`.")
     if response.status_code != 200:
         raise RuntimeError(
             f"feed authorization failed ({response.status_code}): {response.text[:300]}"
@@ -79,6 +80,7 @@ class UpstoxFeed:
         on_status: StatusHandler | None = None,
         mode: str = "full",
         max_reconnect_delay: float = 30.0,
+        token_provider: Callable[[], str] | None = None,
     ) -> None:
         if mode not in {"ltpc", "full", "full_d30", "option_greeks"}:
             raise ValueError(f"unsupported feed mode: {mode}")
@@ -88,6 +90,7 @@ class UpstoxFeed:
         self.on_status = on_status
         self.mode = mode
         self.max_reconnect_delay = max_reconnect_delay
+        self.token_provider = token_provider
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
@@ -102,6 +105,9 @@ class UpstoxFeed:
                 delay = 1.0
             except asyncio.CancelledError:
                 raise
+            except AuthenticationError as exc:
+                self._emit_status({"type": "auth_error", "error": str(exc)})
+                return
             except Exception as exc:
                 if self._stop.is_set():
                     break
@@ -110,6 +116,8 @@ class UpstoxFeed:
                 delay = min(delay * 2.0, self.max_reconnect_delay)
 
     async def _stream_once(self) -> None:
+        if self.token_provider is not None:
+            self.access_token = await asyncio.to_thread(self.token_provider)
         uri = await asyncio.to_thread(authorize_feed_url, self.access_token)
 
         async with websockets.connect(
@@ -121,7 +129,7 @@ class UpstoxFeed:
             open_timeout=20,
         ) as socket:
             self._emit_status({"type": "connected", "uri_host": _host_of(uri)})
-            await socket.send(json.dumps(self._subscription_payload()))
+            await socket.send(json.dumps(self._subscription_payload()).encode("utf-8"))
 
             while not self._stop.is_set():
                 try:
@@ -223,7 +231,8 @@ def _tick_from_ltpc(
     open_interest: float = 0.0,
 ) -> Tick:
     return Tick(
-        ts=received_at,
+        instrument_key=instrument_key,
+        ts=_frame_time(ltpc.ltt) if ltpc.ltt else received_at,
         ltp=ltpc.ltp,
         ltq=int(ltpc.ltq),
         close_prev=ltpc.cp,
@@ -244,7 +253,8 @@ def _tick_from_market_feed(instrument_key: str, market, received_at: datetime) -
     ask_q = depth[0].askQ if depth else 0
 
     return Tick(
-        ts=received_at,
+        instrument_key=instrument_key,
+        ts=_frame_time(market.ltpc.ltt) if market.ltpc.ltt else received_at,
         ltp=market.ltpc.ltp,
         ltq=int(market.ltpc.ltq),
         close_prev=market.ltpc.cp,
@@ -257,6 +267,9 @@ def _tick_from_market_feed(instrument_key: str, market, received_at: datetime) -
         open_interest=float(market.oi),
         total_buy_qty=float(market.tbq),
         total_sell_qty=float(market.tsq),
+        greeks={"delta": market.optionGreeks.delta, "gamma": market.optionGreeks.gamma,
+                "theta": market.optionGreeks.theta, "vega": market.optionGreeks.vega,
+                "iv": market.iv},
     )
 
 

@@ -382,7 +382,8 @@ def test_board_draws_all_three_legs(board, width: int, height: int) -> None:
     assert "INDEX" in rendered
     assert "CALL" in rendered
     assert "PUT" in rendered
-    assert "does the move pay for the position?" in rendered
+    assert "forward results" in rendered
+    assert "10 trader rules" in rendered
 
 
 def test_leg_panels_are_marked_blue_when_a_path_is_drawn(board) -> None:

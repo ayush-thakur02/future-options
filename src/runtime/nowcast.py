@@ -69,7 +69,7 @@ class NowcastLoop:
                 return
             except TimeoutError:
                 pass
-            self.tick_once()
+            await asyncio.to_thread(self.tick_once)
 
     def tick_once(self) -> bool:
         """One refresh cycle. Returns whether a path was produced."""

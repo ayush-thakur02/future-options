@@ -54,6 +54,8 @@ class Tick:
     open_interest: float = 0.0
     total_buy_qty: float = 0.0
     total_sell_qty: float = 0.0
+    instrument_key: str = ""
+    greeks: dict = field(default_factory=dict)
 
     @property
     def mid(self) -> float:
@@ -146,7 +148,8 @@ class ForecastCandle:
     rebuilt continuously from the live price, so a projected candle moves as the
     market moves underneath it rather than being fixed at the moment it was made.
 
-    ``horizon`` counts bars ahead: 1 is the bar that closes next.
+    ``horizon`` counts complete bars after the current/forming bar. Timestamps
+    are bar OPEN times; a target is scored after that entire bar closes.
     """
 
     ts: datetime
@@ -289,6 +292,10 @@ class MarketSnapshot:
     conviction: float = 0.0
     projection_ts: datetime | None = None
     projection_error_bps: float = 0.0
+    research: dict = field(default_factory=dict)
+    source: str = "simulation"
+    instrument_key: str = ""
+    last_tick_ts: datetime | None = None
 
     @property
     def change(self) -> float:

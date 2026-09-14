@@ -319,9 +319,19 @@ def dashboard(
     legs: bool = typer.Option(
         True, "--legs/--no-legs", help="Chart the at-the-money call and put beside the index"
     ),
+    workers: int | None = typer.Option(None, help="CPU workers (-1 = all available CPUs; default from config)"),
+    learn: bool = typer.Option(True, "--learn/--no-learn", help="Update instrument models as candles close"),
+    view: str = typer.Option("research", help="Initial panel: research, costs, indicators"),
 ) -> None:
     """Run the dashboard: call, index and put, with the next three candles projected."""
     settings = _settings()
+    if timeframe < 1 or bars_ahead < 1 or refresh <= 0 or nowcast <= 0 or speed <= 0:
+        raise typer.BadParameter("Timeframe, bars ahead, refresh, nowcast and speed must be positive.")
+    if view not in {"research", "costs", "indicators"}:
+        raise typer.BadParameter("View must be research, costs or indicators.")
+    if workers is not None:
+        settings.workers = workers
+    settings.online_learning = learn
     settings.bar_minutes = timeframe
     if bars_ahead:
         settings.plugin_config.setdefault("forecast:projection", {})["bars_ahead"] = bars_ahead
@@ -337,6 +347,7 @@ def dashboard(
             legs=legs,
         ),
     )
+    session.renderer.view = view
 
     if session.live:
         console.print("[cyan]live Upstox feed[/] — ticks stream as they print\n")
@@ -351,6 +362,9 @@ def dashboard(
         asyncio.run(session.run())
     except KeyboardInterrupt:
         pass
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from None
     finally:
         console.print("[green]dashboard stopped[/]")
 
@@ -375,7 +389,7 @@ def snapshot(
 
     session = Session(
         kernel=Kernel.bootstrap(settings),
-        config=SessionConfig(offline=offline, timeframe=timeframe, days=3, legs=legs),
+        config=SessionConfig(offline=offline, timeframe=timeframe, days=3, legs=legs, record=False, research=False),
     )
     session.bootstrap()
 
@@ -392,6 +406,11 @@ def snapshot(
     stats = session.engine.forecaster
     if stats is not None:
         console.print(f"[dim]projection: {stats.summary} · {stats.tracker.summary()}[/]")
+    if session.board:
+        session.board.close()
+    else:
+        session.engine.close()
+    session.broker.close()
 
 
 # ---------------------------------------------------------------- strategies
@@ -638,10 +657,11 @@ def _store_chain_snapshot(kernel, chain) -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(live: bool = typer.Option(False, "--live", help="Validate credentials and feed authorization with Upstox")) -> None:
     """Check the environment, credentials, and cached data."""
     settings = _settings()
     rows: list[tuple[str, str, str]] = []
+    provider_market_status = None
 
     rows.append(("python", sys.version.split()[0], "ok"))
 
@@ -661,6 +681,19 @@ def doctor() -> None:
     rows.append(
         ("upstox token", "present" if token else "missing", "ok" if token else "warn")
     )
+    if live:
+        from plugins.sources.upstox.feed import authorize_feed_url
+
+        try:
+            selected = broker.validate_auth()
+            authorize_feed_url(selected)
+            provider_market_status = broker.rest().market_status()
+            rows.append(("live authorization", broker.auth_status + "; feed accepted", "ok"))
+        except Exception as exc:
+            rows.append(("live authorization", str(exc), "warn"))
+        finally:
+            broker.close()
+    rows.append(("CPU workers", f"{settings.worker_count} / all available", "ok"))
 
     if settings.candles_path.exists():
         import pandas as pd
@@ -717,9 +750,9 @@ def doctor() -> None:
 
     calendar = TradingCalendar()
     open_now = calendar.is_open()
-    rows.append(
-        ("market", "open" if open_now else "closed", "ok" if open_now else "dim")
-    )
+    rows.append(("market (Upstox)", provider_market_status, "ok" if provider_market_status == "NORMAL_OPEN" else "dim")
+                if provider_market_status else
+                ("session clock", "open hours (holiday status not checked)" if open_now else "outside open hours", "dim"))
 
     table = Table(title=f"niftypulse {__version__} — environment", header_style="bold cyan")
     for column in ("check", "value", "status"):
@@ -728,6 +761,48 @@ def doctor() -> None:
         colour = {"ok": "green", "warn": "yellow", "dim": "grey62"}[status]
         table.add_row(name, value, f"[{colour}]{status}[/]")
     console.print(table)
+
+
+@app.command()
+def research(
+    offline: bool = typer.Option(False, "--offline", help="Inspect simulation outcomes instead of live"),
+    failures: bool = typer.Option(False, "--failures", help="Show recent misses and their original context"),
+    limit: int = typer.Option(20, min=1, max=1000),
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable report for further research"),
+) -> None:
+    """Report persisted prediction outcomes; warm-up samples are never successes."""
+    import json
+    import sqlite3
+
+    path = _settings().data_dir / "research" / ("simulation.sqlite3" if offline else "live.sqlite3")
+    if not path.exists():
+        console.print("No recorded research session yet. Start niftypulse dashboard.")
+        return
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        if failures:
+            records = [dict(row) for row in db.execute("""SELECT instrument,timeframe,target,horizon,
+                predicted_close,actual_close,error_bps,context FROM forecasts WHERE status='miss'
+                ORDER BY target DESC LIMIT ?""", (limit,))]
+        else:
+            records = [dict(row) for row in db.execute("""SELECT instrument,timeframe,horizon,
+                SUM(status IN ('hit','miss')) AS scored, SUM(status='hit') AS wins,
+                SUM(status='miss') AS misses, ROUND(100.0*SUM(status='hit')/
+                NULLIF(SUM(status IN ('hit','miss')),0),2) AS hit_pct,
+                ROUND(AVG(error_bps),3) AS mae_bps,
+                SUM(status IN ('missing_bar','unresolved','pending')) AS unscored
+                FROM forecasts GROUP BY instrument,timeframe,horizon ORDER BY instrument,timeframe,horizon""")]
+    if json_output:
+        console.print_json(json.dumps(records))
+        return
+    table = Table(title="Forecast misses" if failures else "Forward outcomes · first-issued forecasts", header_style="bold cyan")
+    if records:
+        for name in records[0]:
+            table.add_column(name, overflow="fold")
+        for record in records:
+            table.add_row(*(str(value) if value is not None else "—" for value in record.values()))
+    console.print(table)
+    console.print("[dim]Direction uses a 0.1bp deadband relative to the issue price. Hit rate is not trading P&L.\nRepeated runs have separate IDs; --json exports context for further analysis.[/]")
 
 
 def main() -> None:

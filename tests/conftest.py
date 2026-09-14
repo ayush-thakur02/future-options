@@ -68,7 +68,7 @@ def offline_session():
 
     session = Session(
         kernel=Kernel.bootstrap(Settings()),
-        config=SessionConfig(offline=True, days=3, refresh_history=False),
+        config=SessionConfig(offline=True, days=3, refresh_history=False, research=False),
     )
     session.bootstrap()
     return session

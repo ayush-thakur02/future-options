@@ -39,9 +39,9 @@ class UpstoxCredentials:
     """OAuth credentials for the Upstox API."""
 
     client_id: str | None = None
-    client_secret: str | None = None
+    client_secret: str | None = field(default=None, repr=False)
     redirect_uri: str | None = None
-    access_token: str | None = None
+    access_token: str | None = field(default=None, repr=False)
 
     @property
     def has_oauth(self) -> bool:
@@ -89,7 +89,11 @@ class Settings:
     n_splits: int = 4
     embargo_bars: int = 20
     min_train_bars: int = 4000
-    train_n_jobs: int = 4
+    train_n_jobs: int = -1
+    workers: int = -1
+    online_learning: bool = True
+    option_fixed_cost_rupees: float = 40.0
+    option_variable_cost_bps: float = 25.0
 
     # Position sizing used for the cost hurdle and for backtests.
     reference_notional: float = 2_000_000.0
@@ -114,6 +118,13 @@ class Settings:
     def ensure_dirs(self) -> None:
         for path in (self.data_dir, self.model_dir, self.log_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def worker_count(self) -> int:
+        from joblib import cpu_count
+
+        available = max(cpu_count(), 1)
+        return available if self.workers < 1 else min(self.workers, available)
 
     @property
     def candles_path(self) -> Path:
@@ -155,8 +166,8 @@ def _load_yaml(path: Path) -> dict:
 
 def load_settings(config_path: Path | None = None) -> Settings:
     """Build :class:`Settings` from env, YAML, and defaults."""
-    load_dotenv(override=False)
     root = project_root()
+    load_dotenv(root / ".env", override=False)
 
     raw = _load_yaml(config_path or root / "config" / "default.yaml")
     data_cfg = raw.get("data", {})
@@ -186,6 +197,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
         embargo_bars=int(model_cfg.get("embargo_bars", Settings.embargo_bars)),
         min_train_bars=int(model_cfg.get("min_train_bars", Settings.min_train_bars)),
         train_n_jobs=int(model_cfg.get("train_n_jobs", Settings.train_n_jobs)),
+        workers=int(os.getenv("NIFTYPULSE_WORKERS", model_cfg.get("workers", -1))),
+        online_learning=_as_bool(model_cfg.get("online_learning", True)),
+        option_fixed_cost_rupees=float(backtest_cfg.get("option_fixed_cost_rupees", 40.0)),
+        option_variable_cost_bps=float(backtest_cfg.get("option_variable_cost_bps", 25.0)),
         reference_notional=float(
             model_cfg.get("reference_notional", Settings.reference_notional)
         ),

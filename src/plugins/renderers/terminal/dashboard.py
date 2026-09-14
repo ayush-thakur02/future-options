@@ -53,6 +53,7 @@ class TerminalRenderer:
         self.forecaster = forecaster
         self.console = console or Console()
         self._live = None
+        self.view = "research"
 
     # ------------------------------------------------------------- composition
 
@@ -99,29 +100,25 @@ class TerminalRenderer:
         only as wide as its own panel — a leg chart of 30 columns is small, but it
         is the same chart, drawn smaller.
         """
-        width = max(self.console.width - 2, 50)
-        height = max(self.console.height - 4, 20)
-        chart_height = int(min(max(height * 0.34, MIN_CHART_HEIGHT), MAX_CHART_HEIGHT))
-        verdict_height = 9
-        bottom = height - chart_height - verdict_height - 4
-        if bottom < 8:
-            chart_height = max(chart_height - (8 - bottom), 4)
-            bottom = 8
+        width = self.console.width
+        height = self.console.height
+        chart_height = min(16, max(4, height - 29))
+        bottom = max(height - chart_height - 12, 6)
 
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
-            Layout(name="charts", size=chart_height + 3),
-            Layout(name="verdict", size=verdict_height),
+            Layout(name="charts", size=chart_height + 8),
             Layout(name="bottom", size=bottom),
             Layout(name="footer", size=1),
         )
+        ordered = sorted(board.legs, key=lambda leg: {"CALL": 0, "INDEX": 1, "PUT": 2}.get(leg.label, 3))
         layout["charts"].split_row(
-            *[Layout(name=leg.label.lower(), ratio=1) for leg in board.legs]
+            *[Layout(name=leg.label.lower(), ratio=1) for leg in ordered]
         )
         layout["bottom"].split_row(
-            Layout(name="strategies", ratio=2),
-            Layout(name="indicators", ratio=3),
+            Layout(name="strategies", ratio=3),
+            Layout(name="indicators", ratio=2),
         )
 
         layout["header"].update(board_panels.board_header(board, status, self.timeframe))
@@ -131,23 +128,17 @@ class TerminalRenderer:
         # its chart into the gap, and one told it is narrower wraps its price axis.
         count = max(len(board.legs), 1)
         base = max(width // count, 20)
-        for index, leg in enumerate(board.legs):
+        for index, leg in enumerate(ordered):
             panel_width = base if index < count - 1 else max(width - base * (count - 1), base)
             layout[leg.label.lower()].update(
                 board_panels.leg_panel(leg, panel_width, chart_height, self.timeframe)
             )
-        layout["verdict"].update(board_panels.verdicts(board))
         spot_leg = board.spot_leg
         layout["strategies"].update(
-            panels.signals(spot_leg.snapshot) if spot_leg else panels.signals(MarketSnapshot(
-                ts=board.ts, symbol=board.symbol, last_price=board.spot, prev_close=board.spot, candles=None
-            ))
+            board_panels.scalp_costs(board) if self.view == "costs" else board_panels.strategy_matrix(board)
         )
         layout["indicators"].update(
-            panels.indicators(spot_leg.snapshot) if spot_leg else panels.indicators(
-                MarketSnapshot(ts=board.ts, symbol=board.symbol, last_price=board.spot,
-                               prev_close=board.spot, candles=None)
-            )
+            panels.indicators(spot_leg.snapshot) if self.view == "indicators" and spot_leg else board_panels.research_scores(board)
         )
         layout["footer"].update(board_panels.board_footer(board, status))
         return layout
@@ -173,6 +164,7 @@ class TerminalRenderer:
             screen=True,
             refresh_per_second=max(int(1.0 / max(self.refresh, 1e-6)), 4),
             transient=False,
+            auto_refresh=False,
         ) as handle:
             self._live = handle
             try:
@@ -189,9 +181,9 @@ class TerminalRenderer:
         if self._live is None:
             return
         if isinstance(snapshot, BoardSnapshot):
-            self._live.update(self.build_board(snapshot, status))
+            self._live.update(self.build_board(snapshot, status), refresh=True)
         else:
-            self._live.update(self.build(snapshot, status))
+            self._live.update(self.build(snapshot, status), refresh=True)
 
     def _blank(self):
         from rich.console import Group

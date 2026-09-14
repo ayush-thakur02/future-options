@@ -11,7 +11,7 @@ from __future__ import annotations
 from core.settings import Settings
 
 from .. import DataUnavailable
-from .auth import resolve_token
+from .auth import AuthenticationError, TokenStore, clean_token, resolve_token
 from .feed import StatusHandler, TickHandler, UpstoxFeed
 from .rest import UpstoxREST
 
@@ -29,13 +29,49 @@ class UpstoxBroker:
         self.settings = settings
         self.feed_mode = feed_mode
         self._rest: UpstoxREST | None = None
+        self._active_token: str | None = None
+        self.auth_status = "not checked"
 
     # ------------------------------------------------------------- credentials
 
     @property
     def token(self) -> str | None:
         """An explicit env token wins; otherwise the stored one, if unexpired."""
-        return resolve_token(self.settings.credentials.access_token, self.settings.token_path)
+        return self._active_token or resolve_token(self.settings.credentials.access_token, self.settings.token_path)
+
+    def validate_auth(self) -> str:
+        """Validate env first; a rejected env value must not shadow a saved login.
+
+        Only 401 permits fallback. Rate limits and network faults are not evidence
+        that a credential is bad. No token or signed redirect is logged.
+        """
+        candidates = [
+            ("active", self._active_token),
+            (".env/environment", clean_token(self.settings.credentials.access_token)),
+            ("saved login", clean_token(TokenStore(self.settings.token_path).load())),
+        ]
+        seen = set()
+        rejected = False
+        for source, token in candidates:
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            with UpstoxREST(token) as client:
+                try:
+                    client.ltp(self.settings.instrument_key)
+                except AuthenticationError:
+                    rejected = True
+                    continue
+            self._active_token = token
+            if self._rest is not None and self._rest.access_token != token:
+                self.close()
+            self.auth_status = f"authenticated via {source}"
+            if rejected:
+                self.auth_status += " (rejected token skipped)"
+            return token
+        raise AuthenticationError(
+            "No valid Upstox token. Run `niftypulse login`; API key/secret alone cannot stream prices."
+        )
 
     @property
     def is_configured(self) -> bool:
@@ -56,7 +92,7 @@ class UpstoxBroker:
     def rest(self) -> UpstoxREST:
         """The REST client, built on first use."""
         if self._rest is None:
-            self._rest = UpstoxREST(self.require_token())
+            self._rest = UpstoxREST(self._active_token or self.validate_auth())
         return self._rest
 
     def feed(
@@ -73,6 +109,7 @@ class UpstoxBroker:
             on_tick=on_tick,
             on_status=on_status,
             mode=mode or self.feed_mode,
+            token_provider=self.validate_auth,
         )
 
     def close(self) -> None:

@@ -17,12 +17,15 @@ from __future__ import annotations
 import time
 from collections import deque
 from datetime import date, datetime, timedelta
+from threading import Lock
 
 import httpx
 import pandas as pd
 
 from core.bars import normalize_candles
 from core.calendar import IST
+
+from .auth import AuthenticationError
 
 API_BASE = "https://api.upstox.com"
 HISTORY_URL = f"{API_BASE}/v3/historical-candle"
@@ -57,8 +60,13 @@ class RateLimiter:
         self.per_minute = per_minute
         self._second_window: deque[float] = deque()
         self._minute_window: deque[float] = deque()
+        self._lock = Lock()
 
     def acquire(self) -> None:
+        with self._lock:
+            self._acquire()
+
+    def _acquire(self) -> None:
         while True:
             now = time.monotonic()
             while self._second_window and now - self._second_window[0] > 1.0:
@@ -110,6 +118,8 @@ class UpstoxREST:
 
             if response.status_code == 200:
                 return response.json()
+            if response.status_code == 401:
+                raise AuthenticationError("Upstox rejected the access token (401). Run `niftypulse login`.")
 
             # Retry on rate limiting and transient server faults.
             if response.status_code in (429, 500, 502, 503, 504):
@@ -124,6 +134,18 @@ class UpstoxREST:
         raise RuntimeError(f"Upstox request exhausted retries for {url}: {last_error}")
 
     # ------------------------------------------------------------------ history
+
+    def ltp(self, instrument_key: str) -> dict:
+        return self._get(f"{API_BASE}/v3/market-quote/ltp", {"instrument_key": instrument_key}).get("data", {})
+
+    def market_status(self, exchange: str = "NSE") -> str:
+        return self._get(f"{API_BASE}/v2/market/status/{exchange}").get("data", {}).get("status", "unknown")
+
+    def option_contracts(self, instrument_key: str) -> list[dict]:
+        return self._get(f"{API_BASE}/v2/option/contract", {"instrument_key": instrument_key}).get("data", [])
+
+    def option_chain(self, instrument_key: str, expiry: str) -> list[dict]:
+        return self._get(f"{API_BASE}/v2/option/chain", {"instrument_key": instrument_key, "expiry_date": expiry}).get("data", [])
 
     def fetch_historical(
         self,
@@ -169,6 +191,8 @@ class UpstoxREST:
                 frame = self.fetch_historical(instrument_key, unit, interval, cursor, window_end)
                 if not frame.empty:
                     frames.append(frame)
+            except AuthenticationError:
+                raise
             except RuntimeError as exc:
                 # A single empty/over-limit window should not abort a long backfill.
                 print(f"  ! window {cursor} -> {window_end} failed: {str(exc)[:140]}")

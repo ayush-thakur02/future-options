@@ -27,8 +27,8 @@ needed only to regenerate the protobuf stubs.
 
 ## First run — no credentials needed
 
-Every command accepts `--offline`, so the whole pipeline can be exercised before
-wiring up an API key.
+Commands that load market data accept `--offline`, so the whole pipeline can be
+exercised before wiring up an API key.
 
 ```bash
 uv run niftypulse doctor                       # environment check
@@ -61,6 +61,10 @@ uv run niftypulse login   # opens the Upstox login, stores the token
 ```
 
 Tokens expire at 03:30 IST the next day, so `login` is a once-per-morning step.
+
+Run `niftypulse doctor --live` to validate the token and feed authorization. If an
+environment token is rejected, the app tries the saved login token automatically.
+API key/secret values alone cannot authorize the market feed.
 
 Then:
 
@@ -96,7 +100,13 @@ The board shows three charts — the index, the at-the-money call and the
 at-the-money put — each with the next three candles projected in **blue** after
 the last printed one. Green and red are printed bars; blue is never a printed bar.
 
-Under the charts, a verdict per leg:
+The default panel shows all ten research rules and forward prediction outcomes
+for each instrument/horizon. Press `2` for the premium-scalping cost calculation,
+`3` for indicators, or `1` to return to research. `q` exits. Historical warm-up
+samples are shown separately from live wins and misses. See
+[Live research](live-research.md) for the scoring and learning definitions.
+
+The legacy advisory calculations, available for separate research, use:
 
 ```
 leg            do       needs   projected      edge  why

@@ -23,18 +23,22 @@ and simulated runs are the same object driven by different sources.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
+from functools import wraps
+from threading import RLock
 
 import pandas as pd
 
 from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
-from core.types import ForecastCandle, MarketSnapshot, Prediction, Signal, Tick
+from core.types import Direction, ForecastCandle, MarketSnapshot, Prediction, Signal, Tick
 from kernel import Kernel
 from plugins.strategies import CompositeStrategy, StrategyCatalog, StrategyContext
 
 from .conviction import blend, trend_conviction
+from .research import OnlineLearner, ResearchJournal, recent_scores
 
 FEATURE_WINDOW = 2000
 # Bars handed to the strategy layer. Strategies look back at most ~100 bars, so
@@ -42,10 +46,19 @@ FEATURE_WINDOW = 2000
 SIGNAL_WINDOW = 600
 # Named in the signal panel. More than a handful is unreadable, and these are the
 # ones whose disagreement with the ensemble is worth seeing.
-HIGHLIGHTED = ("ema_trend", "supertrend", "macd_momentum", "rsi_reversion", "vwap_reversion", "squeeze_release")
+HIGHLIGHTED = ("ema_trend", "supertrend", "donchian_breakout", "orb", "macd_momentum",
+               "rsi_reversion", "bollinger_reversion", "vwap_reversion", "squeeze_release", "order_flow")
 # Bars the projection needs before it will draw anything. Two bars of history
 # would produce a path, just not a meaningful one.
 MIN_PROJECTION_BARS = 15
+
+
+def synchronized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class Engine:
@@ -61,9 +74,24 @@ class Engine:
         signal_window: int = SIGNAL_WINDOW,
         symbol: str | None = None,
         forecaster=None,
+        instrument_key: str | None = None,
+        source: str = "simulation",
     ) -> None:
         self.kernel = kernel
+        self._lock = RLock()
         self.settings = kernel.settings
+        self.instrument_key = instrument_key or self.settings.instrument_key
+        self.source = source
+        self.last_tick_ts = None
+        self.last_quote_ts = None
+        self.market_status = None
+        self.compute_ms = 0.0
+        self.rejected_ticks = 0
+        self.spread = 0.0
+        self.online = OnlineLearner(bar_minutes or self.settings.bar_minutes) if self.settings.online_learning else None
+        self._rule_pending = {}
+        self.rule_stats = {}
+        self._latest_scores = {}
         self.symbol = symbol or kernel.settings.symbol
         self.bar_minutes = bar_minutes or kernel.settings.bar_minutes
         self.calendar = calendar or TradingCalendar()
@@ -74,9 +102,12 @@ class Engine:
         # any of the three can be swapped by changing which plugin is registered.
         self.pipeline = kernel.capability("features")
         self.broker = kernel.build("source:upstox")
-        self.predictor = kernel.capability("forecast") if kernel.registry.capabilities().get("forecast") else None
+        # Batch artifacts are trained for the index. Never apply them to premiums
+        # or to a different timeframe without matching training metadata.
+        self.predictor = kernel.capability("forecast") if (self.instrument_key == self.settings.instrument_key
+            and kernel.registry.capabilities().get("forecast")) else None
         self.catalog = StrategyCatalog.from_kernel(kernel)
-        self.strategy = strategy or self.catalog.ensemble()
+        self.strategy = strategy or self.catalog.ensemble(weights={name: 1.0 for name in HIGHLIGHTED})
         self.aggregator = kernel.build(
             "aggregator:candle_builder", bar_minutes=self.bar_minutes
         )
@@ -105,9 +136,12 @@ class Engine:
         self.conviction: float = 0.0
         self.projection_refreshes: int = 0
         self._listeners: list[Callable[[MarketSnapshot], None]] = []
+        if self.forecaster is not None:
+            self.forecaster.tracker.freeze_first = True
 
     # ------------------------------------------------------------- bootstrap
 
+    @synchronized
     def bootstrap(self, history: pd.DataFrame | None = None, days: int = 20) -> Engine:
         """Seed the engine with recent bars so indicators are warm immediately."""
         if history is not None:
@@ -124,11 +158,14 @@ class Engine:
         self.bar_count = len(self.history)
 
         self._recompute()
+        if self.online is not None:
+            self.online.update(self.history, self.features, live=False)
         self.status = "ready"
         return self
 
     # ----------------------------------------------------------------- ticks
 
+    @synchronized
     def on_tick(self, tick: Tick) -> bool:
         """Feed one tick. Returns True when a bar closed and state was refreshed.
 
@@ -136,6 +173,26 @@ class Engine:
         thousands of updates a minute. Only the anchor price and the momentum
         estimate move here; everything expensive waits for the bar close.
         """
+        if not pd.notna(tick.ltp) or tick.ltp <= 0:
+            self.rejected_ticks += 1
+            return False
+        if self.source == "Upstox":
+            if self.last_quote_ts is not None and tick.ts < self.last_quote_ts:
+                self.rejected_ticks += 1
+                return False
+            self.last_quote_ts = tick.ts
+            self.last_price = tick.ltp
+            if tick.close_prev:
+                self.prev_close = tick.close_prev
+            if (self.market_status not in {None, "NORMAL_OPEN"} or not self.calendar.is_open(tick.ts)
+                    or (self.last_tick_ts and tick.ts < self.last_tick_ts)):
+                self.rejected_ticks += 1
+                return False
+            if not self.history.empty and pd.Timestamp(tick.ts) < self.history.index[-1] + pd.Timedelta(minutes=self.bar_minutes):
+                self.rejected_ticks += 1
+                return False
+        self.last_tick_ts = tick.ts
+        self.spread = max(tick.spread, 0.0)
         self.tick_count += 1
         self.last_price = tick.ltp or tick.mid
         if tick.close_prev:
@@ -148,7 +205,11 @@ class Engine:
             return False
 
         self._append_closed_bar(closed)
+        self._score_rules(closed)
         self._recompute()
+        if self.online is not None:
+            self.online.update(self.history, self.features)
+            self.online.save()
         # Score whatever the projections said about the bar that just closed,
         # then redraw: a bar close changes the volatility, the trend and the
         # ensemble view all at once, so the path must not wait for the next tick
@@ -175,6 +236,7 @@ class Engine:
             self.status = "warming up"
             return
 
+        started = time.perf_counter()
         try:
             self.features = self.pipeline.build(self.history, bar_minutes=self.bar_minutes)
         except Exception as exc:  # noqa: BLE001
@@ -187,6 +249,7 @@ class Engine:
         self.regime = self._current_regime()
         self.slow_conviction = self._ensemble_view(context)
         self.status = "live"
+        self.compute_ms = (time.perf_counter() - started) * 1000
 
     def _collect_signals(self, context: StrategyContext) -> list[Signal]:
         signals: list[Signal] = []
@@ -204,22 +267,45 @@ class Engine:
                 extras=context.extras,
             )
 
-        try:
-            ensemble_signal = self.strategy._latest_signal(context, threshold=0.05)
-            if ensemble_signal is not None:
-                ensemble_signal.strategy = "ensemble"
-                signals.append(ensemble_signal)
-        except Exception:
-            pass
-
+        self._latest_scores = {}
         for name in HIGHLIGHTED:
+            state = "WAIT"
+            value = 0.0
+            reason = "conditions not met"
             try:
-                signal = self.catalog.get(name)._latest_signal(context, threshold=0.15)
-                if signal is not None:
-                    signals.append(signal)
-            except Exception:
-                continue
+                rule = self.catalog.get(name)
+                volume_ok = "volume" in context.bars and context.bars["volume"].tail(30).fillna(0).sum() > 0
+                depth_ok = any(k in context.features and context.features[k].tail(30).abs().sum() > 0
+                               for k in ("depth_imbalance", "depth_imbalance_ma"))
+                if name == "vwap_reversion" and not volume_ok:
+                    state, reason = "N/A", "No traded volume; VWAP unavailable"
+                elif name == "order_flow" and not depth_ok:
+                    state, reason = "N/A", "No order-book depth"
+                else:
+                    series = rule.score(context).fillna(0.0)
+                    value = float(series.iloc[-1])
+                    reason = rule.describe(value, context) if abs(value) >= 0.15 else rule.description
+                    state = "ACTIVE" if abs(value) >= 0.15 else "WAIT"
+            except Exception as exc:
+                state, reason = "ERROR", f"{type(exc).__name__}: rule inputs unavailable"
+            self._latest_scores[name] = value
+            measured = self.rule_stats.get(name, {"scored": 0, "hits": 0})
+            signals.append(Signal(ts=self.history.index[-1].to_pydatetime(), strategy=name,
+                                  direction=Direction.from_value(value, 0.15), strength=abs(value),
+                                  reason=reason, meta={"state": state, **measured}))
         return signals
+
+    def _score_rules(self, bar: dict) -> None:
+        stamp = pd.Timestamp(bar["ts"])
+        for target in list(self._rule_pending):
+            records = self._rule_pending.pop(target) if target <= stamp else []
+            if target != stamp:
+                continue
+            for signal, anchor in records:
+                hit = Direction.from_value(float(bar["close"]) / anchor - 1, 0.00001) == signal.direction
+                stat = self.rule_stats.setdefault(signal.strategy, {"scored": 0, "hits": 0})
+                stat["scored"] += 1
+                stat["hits"] += int(hit)
 
     def _collect_predictions(self) -> list[Prediction]:
         if self.predictor is None or not getattr(self.predictor, "is_ready", False):
@@ -241,6 +327,7 @@ class Engine:
 
     # ------------------------------------------------------------ projection
 
+    @synchronized
     def refresh_projection(self) -> bool:
         """Rebuild the projected path from the live price and the current view.
 
@@ -252,6 +339,15 @@ class Engine:
         if self.forecaster is None:
             return False
 
+        if self.source == "Upstox":
+            if self.last_tick_ts is None or self.market_status not in {None, "NORMAL_OPEN"}:
+                self.projections = []
+                return False
+            stale = (datetime.now(IST) - self.last_tick_ts).total_seconds() > 90
+            if stale or not self.calendar.is_open():
+                self.projections = []
+                return False
+
         bars = self.market_bars()
         if len(bars) < MIN_PROJECTION_BARS:
             return False
@@ -259,6 +355,12 @@ class Engine:
         anchor = float(self.last_price or bars["close"].iloc[-1])
         fast = trend_conviction(bars)
         self.conviction = blend(self.slow_conviction, fast)
+        learned_closes = {}
+        if self.online is not None and not self.features.empty:
+            offset = int((bars.index[-1] - self.history.index[-1]).total_seconds() / (60 * self.bar_minutes))
+            moves = self.online.moves(self.features)
+            base = float(self.history["close"].iloc[-1])
+            learned_closes = {h: base * (1 + moves[h + offset]) for h in range(1, 4) if h + offset in moves}
 
         # Stamped from the data's own clock, not the wall clock. Live and replay
         # coincide (ticks arrive at the current time), but a snapshot of a cached
@@ -270,6 +372,13 @@ class Engine:
             conviction=self.conviction,
             now=bars.index[-1].to_pydatetime(),
             bar_minutes=self.bar_minutes,
+            learned_closes=learned_closes,
+            session_only=self.source == "Upstox",
+            record=self.source != "Upstox" or self.tick_count > 0,
+            issued_at=self.last_tick_ts or bars.index[-1],
+            context={"regime": self.regime, "conviction": self.conviction,
+                     "strategies": [{"name": s.strategy, "direction": s.direction.value, "reason": s.reason} for s in self.signals],
+                     "learner": self.online.describe() if self.online else {}},
         )
         self.projection_refreshes += 1
         return bool(self.projections)
@@ -292,14 +401,24 @@ class Engine:
 
     def _ensemble_view(self, context: StrategyContext) -> float:
         """The blended strategy score at the latest bar, in [-1, 1]."""
-        try:
-            scores = self.strategy.score(context).dropna()
-        except Exception:  # noqa: BLE001 — an unusable ensemble means no view
-            return 0.0
-        return float(scores.iloc[-1]) if len(scores) else 0.0
+        total = weight_sum = 0.0
+        for rule, prior in self.strategy.components:
+            stat = self.rule_stats.get(rule.name, {})
+            count = stat.get("scored", 0)
+            # Shrunk, bounded weights; small samples cannot dominate the vote.
+            weight = prior * (0.5 + (stat.get("hits", 0) + 5) / (count + 10))
+            total += self._latest_scores.get(rule.name, 0) * weight
+            weight_sum += abs(weight)
+        # Record only live/replay decisions, never historical warm-up successes.
+        if self.tick_count:
+            target = self.history.index[-1] + pd.Timedelta(minutes=3 * self.bar_minutes)
+            self._rule_pending.setdefault(target, [(s, float(self.history["close"].iloc[-1]))
+                for s in self.signals if s.meta.get("state") == "ACTIVE"])
+        return total / weight_sum if weight_sum else 0.0
 
     # -------------------------------------------------------------- snapshot
 
+    @synchronized
     def snapshot(self) -> MarketSnapshot:
         # History plus the forming bar. The aggregator alone would show a single
         # candle the moment the first tick of a session arrived, because it starts
@@ -329,7 +448,43 @@ class Engine:
             projections=self.projections,
             conviction=self.conviction,
             projection_ts=self.forecaster.updated_at if self.forecaster is not None else None,
+            instrument_key=self.instrument_key,
+            source=self.source,
+            last_tick_ts=self.last_tick_ts or self.last_quote_ts,
+            research={"horizons": {h: s.as_row() for h, s in self.forecaster.tracker.stats().items()} if self.forecaster else {},
+                      "recent": recent_scores(self.forecaster.tracker) if self.forecaster else [],
+                      "pending": self.forecaster.tracker.pending if self.forecaster else 0,
+                      "missing": self.forecaster.tracker.missed_bars if self.forecaster else 0,
+                      "online": self.online.describe() if self.online else {},
+                      "compute_ms": self.compute_ms, "ticks": self.tick_count, "rejected_ticks": self.rejected_ticks,
+                      "spread": self.spread, "fixed_cost_rupees": self.settings.option_fixed_cost_rupees,
+                      "variable_cost_bps": self.settings.option_variable_cost_bps,
+                      "workers": self.settings.worker_count},
         )
+
+    @synchronized
+    def enable_research(self) -> None:
+        mode = "live" if self.source == "Upstox" else "simulation"
+        if self.forecaster:
+            self.forecaster.tracker.reset()
+            self.forecaster.tracker.journal = ResearchJournal(self.settings.data_dir / "research" / f"{mode}.sqlite3",
+                self.instrument_key, self.source, self.bar_minutes)
+        if self.online:
+            try:
+                self.online.attach(self.settings.model_dir / "online" / mode,
+                                   f"{self.instrument_key}:{self.bar_minutes}")
+                self.online.update(self.history, self.features, live=False)
+                self.online.save()
+            except (OSError, ValueError, EOFError):
+                self.status = "online checkpoint unavailable; learning in memory"
+
+    @synchronized
+    def close(self) -> None:
+        if self.online:
+            self.online.save()
+        if self.forecaster and self.forecaster.tracker.journal:
+            self.forecaster.tracker.journal.close()
+            self.forecaster.tracker.journal = None
 
     # -------------------------------------------------------------- listeners
 
@@ -376,6 +531,21 @@ class Engine:
 
     def replay(self, ticks: pd.DataFrame, bar_minutes: int | None = None) -> Iterator[MarketSnapshot]:
         """Drive the engine from a tick frame, yielding a snapshot per bar close."""
+        if not ticks.empty and not self.history.empty and ticks.index[0] <= self.history.index[-1]:
+            # A headless replay may revisit cached bars. Rewind all learning
+            # state to the prefix; the replay's future must not remain in memory.
+            self.history = self.history[self.history.index < ticks.index[0]].copy()
+            self.aggregator = self.kernel.new("aggregator:candle_builder", bar_minutes=self.bar_minutes)
+            if self.online is not None:
+                self.online = OnlineLearner(self.bar_minutes)
+            if self.forecaster is not None:
+                self.forecaster.tracker.reset()
+                self.forecaster.momentum.reset()
+            self._rule_pending.clear()
+            self.rule_stats.clear()
+            self.tick_count = 0
+            self.last_tick_ts = None
+            self.bootstrap(self.history)
         for row in ticks.itertuples():
             tick = Tick(
                 ts=row.Index,

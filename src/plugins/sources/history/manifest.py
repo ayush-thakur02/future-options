@@ -14,13 +14,20 @@ path to find out.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
+
+import fcntl
 
 from core.calendar import IST
 
 MANIFEST_VERSION = 1
+_WRITE_LOCK = RLock()
 
 
 class StoreManifest:
@@ -75,27 +82,57 @@ class StoreManifest:
     # ----------------------------------------------------------------- write
 
     def update(self, name: str, key: str, **fields: Any) -> None:
-        payload = self.read()
-        section = payload["datasets"].setdefault(name, {})
-        entry = section.setdefault(key, {})
-        entry.update(fields)
-        entry["updated_at"] = datetime.now(IST).isoformat(timespec="seconds")
-        payload["updated_at"] = entry["updated_at"]
-        self._write(payload)
+        with _WRITE_LOCK, self._exclusive():
+            self._cache = None
+            payload = self.read()
+            section = payload["datasets"].setdefault(name, {})
+            entry = section.setdefault(key, {})
+            entry.update(fields)
+            entry["updated_at"] = datetime.now(IST).isoformat(timespec="seconds")
+            payload["updated_at"] = entry["updated_at"]
+            self._write(payload)
 
     def forget(self, name: str, key: str | None = None) -> None:
-        payload = self.read()
-        if key is None:
-            payload["datasets"].pop(name, None)
-        else:
-            payload["datasets"].get(name, {}).pop(key, None)
-        self._write(payload)
+        with _WRITE_LOCK, self._exclusive():
+            self._cache = None
+            payload = self.read()
+            if key is None:
+                payload["datasets"].pop(name, None)
+            else:
+                payload["datasets"].get(name, {}).pop(key, None)
+            self._write(payload)
 
     def _write(self, payload: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        fd, name = tempfile.mkstemp(prefix="manifest-", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(name, self.path)
+            directory = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
         self._cache = payload
         self._stamp = self._file_stamp()
+
+    @contextmanager
+    def _exclusive(self):
+        """Serialize read-modify-write cycles across processes as well as threads."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        with lock_path.open("a") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _file_stamp(self) -> tuple[int, int] | None:
         try:

@@ -61,6 +61,8 @@ class HorizonStats:
         return {
             "horizon": self.horizon,
             "scored": self.scored,
+            "hits": self.hits,
+            "misses": self.scored - self.hits,
             "hit_rate": round(self.hit_rate, 4),
             "mean_abs_error_bps": round(self.mean_abs_error_bps, 2),
         }
@@ -80,10 +82,13 @@ class ProjectionTracker:
 
     history: int = HISTORY
     _pending: dict[pd.Timestamp, dict[int, _Pending]] = field(default_factory=dict, repr=False)
+    freeze_first: bool = False
+    journal: object | None = field(default=None, repr=False)
+    missed_bars: int = 0
     _scores: deque[ProjectionScore] = field(default_factory=deque, repr=False)
     _stats: dict[int, HorizonStats] = field(default_factory=dict, repr=False)
 
-    def record(self, projections: list[ForecastCandle], anchor: float) -> None:
+    def record(self, projections: list[ForecastCandle], anchor: float, issued_at=None, context=None) -> None:
         """Remember a projection set, replacing any earlier record for the same
         (target bar, horizon) — the freshest estimate wins.
         """
@@ -91,7 +96,11 @@ class ProjectionTracker:
             if candle.ts is None or anchor <= 0:
                 continue
             stamp = pd.Timestamp(candle.ts)
+            if self.freeze_first and candle.horizon in self._pending.get(stamp, {}):
+                continue
             self._pending.setdefault(stamp, {})[candle.horizon] = _Pending(candle, float(anchor))
+            if self.journal is not None:
+                self.journal.issued(candle, anchor, issued_at, context or {})
 
     def observe(self, bar_ts, close: float) -> list[ProjectionScore]:
         """Score the projections targeted at ``bar_ts``, dropping the rest.
@@ -104,7 +113,11 @@ class ProjectionTracker:
         pending = self._pending.pop(stamp, {})
         stale = [key for key in self._pending if key <= stamp]
         for key in stale:
-            self._pending.pop(key, None)
+            dropped = self._pending.pop(key, {})
+            self.missed_bars += len(dropped)
+            if self.journal is not None:
+                for horizon in dropped:
+                    self.journal.missing(key, horizon)
 
         scored: list[ProjectionScore] = []
         for horizon, record in sorted(pending.items()):
@@ -116,7 +129,11 @@ class ProjectionTracker:
         anchor = record.anchor
         realised = float(close) - anchor
         lean = projected - anchor
-        hit = lean == 0.0 or (realised >= 0) == (lean > 0)
+        # A flat forecast is right only when the realised move is flat too.
+        deadband = anchor * 0.00001
+        def direction(value):
+            return 1 if value > deadband else -1 if value < -deadband else 0
+        hit = direction(realised) == direction(lean)
         error_bps = abs(close - projected) / anchor * 10_000 if anchor else 0.0
 
         score = ProjectionScore(
@@ -136,6 +153,8 @@ class ProjectionTracker:
         stat.scored += 1
         stat.hits += int(hit)
         stat.error_bps_sum += error_bps
+        if self.journal is not None:
+            self.journal.scored(score)
         return score
 
     @property
@@ -172,6 +191,7 @@ class ProjectionTracker:
         self._pending.clear()
         self._scores.clear()
         self._stats.clear()
+        self.missed_bars = 0
 
 
 __all__ = ["HorizonStats", "ProjectionScore", "ProjectionTracker"]

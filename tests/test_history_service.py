@@ -168,7 +168,10 @@ def test_a_current_cache_is_not_refetched(settings, recent_bars) -> None:
 
 def test_a_stale_cache_fetches_the_tail_and_stores_it(settings, bars) -> None:
     """Only the missing window is requested, and what arrives is written."""
-    store = seeded(settings, bars)
+    # Synthetic fixtures include today's entire session, even before the close.
+    # Use completed prior sessions so this exercises staleness at any wall time.
+    stale = bars[bars.index.normalize() < pd.Timestamp.now(tz=IST).normalize()]
+    store = seeded(settings, stale)
     before = store.row_count()
 
     fresh = generate_candles(days=2, seed=99)
@@ -185,7 +188,8 @@ def test_a_stale_cache_fetches_the_tail_and_stores_it(settings, bars) -> None:
 
 def test_the_intraday_call_is_made_for_the_current_session(settings, bars) -> None:
     """The historical endpoint excludes today; without this a morning run misses it."""
-    seeded(settings, bars)
+    stale = bars[bars.index.normalize() < pd.Timestamp.now(tz=IST).normalize()]
+    seeded(settings, stale)
     broker = FakeBroker(rest=FakeREST(frame=generate_candles(days=1, seed=7)))
     HistorySource(settings, broker=broker).load_history(days=30, quiet=True)
 

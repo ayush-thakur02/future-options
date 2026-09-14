@@ -46,7 +46,11 @@ model:
   min_train_bars: 4000
   # Folds trained in parallel. Estimators are pinned to one thread each while
   # this is > 1, so raising it beyond the core count does not help.
-  train_n_jobs: 4
+  train_n_jobs: -1
+  # -1 uses all CPUs available to this process/container. Live instrument work
+  # and online updates run outside the terminal and socket event loop.
+  workers: -1
+  online_learning: true
 
   # Position sizing used to compute the cost hurdle, and in backtests.
   # Verify lot_size against the current NIFTY contract specification — NSE
@@ -55,6 +59,10 @@ model:
   lot_size: 75
 
 backtest:
+  # Illustrative round-trip option charges per lot, NOT a broker tariff.
+  # Adjust to your contract note. Observed bid/ask spread is added separately.
+  option_fixed_cost_rupees: 40.0
+  option_variable_cost_bps: 25.0
   # Round-trip slippage per side, in basis points. Usually the largest real cost
   # on a scalping timescale, so it is worth setting this pessimistically.
   slippage_bps: 0.5

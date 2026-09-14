@@ -23,6 +23,17 @@ TOKEN_EXPIRY_HOUR = 3
 TOKEN_EXPIRY_MINUTE = 30
 
 
+class AuthenticationError(RuntimeError):
+    """A rejected credential, safe to display without a response body or token."""
+
+
+def clean_token(token: str | None) -> str | None:
+    value = (token or "").strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    return value or None
+
+
 def build_login_url(client_id: str, redirect_uri: str, state: str = "niftypulse") -> str:
     query = urlencode(
         {
@@ -165,5 +176,5 @@ def resolve_token(
 ) -> str | None:
     """Prefer an explicit env token, then fall back to the stored one."""
     if env_token:
-        return env_token
+        return clean_token(env_token)
     return TokenStore(token_path).load()

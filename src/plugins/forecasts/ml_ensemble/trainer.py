@@ -24,9 +24,10 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
+from joblib import Parallel, cpu_count, delayed
 from rich.console import Console
 from rich.table import Table
+from threadpoolctl import threadpool_limits
 
 from core.calendar import IST
 from core.settings import Settings
@@ -171,7 +172,7 @@ class Trainer:
         # release the GIL during fitting, and threads avoid pickling a 30k-row
         # feature frame once per worker. Estimators are pinned to one thread each
         # so the two levels of parallelism do not fight over the same cores.
-        folds_parallel = min(self.n_jobs if self.n_jobs > 0 else 4, len(folds))
+        folds_parallel = min(self.n_jobs if self.n_jobs > 0 else cpu_count(), len(folds), cpu_count())
         workers = 1 if folds_parallel <= 1 else folds_parallel
         inner_jobs = -1 if workers == 1 else 1
 
@@ -195,9 +196,10 @@ class Trainer:
             probabilities = model.predict_proba(test_X)
             return fold, probabilities, evaluate(test_y, probabilities)
 
-        results = Parallel(n_jobs=workers, backend="threading")(
-            delayed(_run_fold)(fold) for fold in folds
-        )
+        with threadpool_limits(limits=1 if workers > 1 else cpu_count()):
+            results = Parallel(n_jobs=workers, backend="threading")(
+                delayed(_run_fold)(fold) for fold in folds
+            )
 
         for fold, probabilities, report in results:
             oof_probabilities[fold.test] = probabilities

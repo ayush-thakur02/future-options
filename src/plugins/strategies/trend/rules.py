@@ -25,7 +25,7 @@ class EmaTrendStrategy(Strategy):
             return self._empty(context)
 
         # Stacked EMAs give a graded signal rather than a binary cross.
-        alignment = (
+        alignment = -(
             np.sign(features["ema_dist_9"] - features["ema_dist_21"])
             + np.sign(features["ema_dist_21"] - features["ema_dist_50"])
             + np.sign(features["ema_dist_9"] - features["ema_dist_50"])
@@ -112,15 +112,16 @@ class OpeningRangeBreakoutStrategy(Strategy):
         minutes = features["minutes_from_open"]
 
         # Range of the first 15 minutes, broadcast across the session.
-        opening = bars["high"].where(minutes <= 15).groupby(day).cummax()
-        opening_low = bars["low"].where(minutes <= 15).groupby(day).cummin()
-        opening_high = opening.groupby(day).transform("max")
-        opening_low = opening_low.groupby(day).transform("min")
+        opening_mask = (minutes >= 0) & (minutes < 15)
+        opening = bars["high"].where(opening_mask).groupby(day).cummax()
+        opening_low = bars["low"].where(opening_mask).groupby(day).cummin()
+        opening_high = opening.groupby(day).ffill()
+        opening_low = opening_low.groupby(day).ffill()
 
         span = (opening_high - opening_low).replace(0, np.nan)
         position = (bars["close"] - opening_high) / (span + 1e-12)
         downside = (opening_low - bars["close"]) / (span + 1e-12)
-        raw = position.fillna(0.0) + (-downside.fillna(0.0))
+        raw = position.clip(lower=0).fillna(0.0) - downside.clip(lower=0).fillna(0.0)
 
         # Only trade the window where ORB has any edge, and only after the range forms.
         window = ((minutes > 15) & (minutes < 240)).astype(float)
