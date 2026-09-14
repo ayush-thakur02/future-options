@@ -168,6 +168,26 @@ def test_underlying_verdict_uses_the_round_trip_hurdle() -> None:
     short = verdict_for_underlying("INDEX", projected_move_bps=1.0, hurdle_bps=3.9, conviction=0.4)
     assert short.action == FLAT
 
+    bearish = verdict_for_underlying(
+        "INDEX", projected_move_bps=-20.0, hurdle_bps=3.9, conviction=-0.4
+    )
+    assert bearish.action == SHORT
+
+    conflict = verdict_for_underlying(
+        "INDEX", projected_move_bps=-20.0, hurdle_bps=3.9, conviction=0.4
+    )
+    assert conflict.action == FLAT
+    assert "disagree" in conflict.reason
+
+
+def test_bearish_underlying_headline_reports_directional_short() -> None:
+    bearish = verdict_for_underlying(
+        "INDEX", projected_move_bps=-20.0, hurdle_bps=3.9, conviction=-0.4
+    )
+
+    assert headline([bearish]).startswith("INDEX SHORT — edge")
+    assert "IV" not in headline([bearish])
+
 
 def test_headline_prefers_a_long_over_a_richer_short() -> None:
     """A short's edge is not a negative long's: ranking them together picks the short."""

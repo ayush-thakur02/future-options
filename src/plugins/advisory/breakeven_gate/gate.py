@@ -176,16 +176,19 @@ def verdict_for_underlying(
 ) -> LegVerdict:
     """The index or future leg: the original cost hurdle, no delta to help it."""
     edge = abs(projected_move_bps) - hurdle_bps
-    if abs(conviction) > 0.05 and edge > 0:
-        action = LONG
+    has_view = abs(conviction) > 0.05
+    aligned = conviction * projected_move_bps > 0
+    if has_view and aligned and edge > 0:
+        action = LONG if projected_move_bps > 0 else SHORT
         reason = f"needs {hurdle_bps:.1f}bp, projected {abs(projected_move_bps):.1f}bp"
     else:
         action = FLAT
-        reason = (
-            f"needs {hurdle_bps:.1f}bp, projected {abs(projected_move_bps):.1f}bp"
-            if abs(conviction) > 0.05
-            else "no directional view"
-        )
+        if not has_view:
+            reason = "no directional view"
+        elif not aligned:
+            reason = "directional view and projected path disagree"
+        else:
+            reason = f"needs {hurdle_bps:.1f}bp, projected {abs(projected_move_bps):.1f}bp"
     return LegVerdict(
         label=label,
         action=action,
@@ -209,9 +212,17 @@ def headline(verdicts: list[LegVerdict]) -> str:
         best = max(longs, key=lambda verdict: verdict.edge_bps)
         return f"{best.label} LONG — edge {best.edge_bps:+.0f}bp ({best.reason})"
 
-    shorts = [verdict for verdict in verdicts if verdict.action == SHORT]
-    if shorts:
-        best = max(shorts, key=lambda verdict: verdict.iv - verdict.realised_vol)
+    directional_shorts = [
+        verdict for verdict in verdicts
+        if verdict.action == SHORT and verdict.iv <= 0 and verdict.edge_bps > 0
+    ]
+    if directional_shorts:
+        best = max(directional_shorts, key=lambda verdict: verdict.edge_bps)
+        return f"{best.label} SHORT — edge {best.edge_bps:+.0f}bp ({best.reason})"
+
+    premium_shorts = [verdict for verdict in verdicts if verdict.action == SHORT]
+    if premium_shorts:
+        best = max(premium_shorts, key=lambda verdict: verdict.iv - verdict.realised_vol)
         return (
             f"{best.label} SHORT — IV {best.iv:.1%} over realised {best.realised_vol:.1%}, "
             f"projection points away"
