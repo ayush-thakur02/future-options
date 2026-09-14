@@ -107,6 +107,48 @@ def test_every_algorithm_gets_its_own_prediction_and_outcome_record(tmp_path) ->
     assert all(card.all_time.sample_count == 1 for card in lab.scorecards())
 
 
+def test_algorithm_mapping_applies_per_learner_parameters(tmp_path) -> None:
+    lab = OnlineResearchLab(
+        tmp_path / "online.sqlite3",
+        algorithms={
+            "ftrl_proximal": {"alpha": 0.2, "l1": 0.03},
+            "adaptive_knn": {"k": 3, "window": 12, "max_features": 4},
+        },
+    )
+    assert lab.algorithms["ftrl_proximal"].alpha == pytest.approx(0.2)
+    assert lab.algorithms["ftrl_proximal"].l1 == pytest.approx(0.03)
+    assert lab.algorithms["adaptive_knn"].k == 3
+    assert lab.algorithms["adaptive_knn"].window == 12
+
+
+def test_adaptive_knn_learns_a_nonlinear_local_state(tmp_path) -> None:
+    lab = OnlineResearchLab(
+        tmp_path / "online.sqlite3",
+        algorithms={"adaptive_knn": {"k": 3, "window": 30}},
+        min_trust_for_action=0.0,
+    )
+    algorithm = lab.algorithms["adaptive_knn"]
+    for _ in range(8):
+        algorithm.update({"state": -2.0}, 0)
+        algorithm.update({"state": 2.0}, 1)
+    assert algorithm.predict_proba({"state": -2.0}) < 0.25
+    assert algorithm.predict_proba({"state": 2.0}) > 0.75
+
+
+def test_ftrl_adapts_without_mutating_during_prediction(tmp_path) -> None:
+    lab = OnlineResearchLab(
+        tmp_path / "online.sqlite3",
+        algorithms=("ftrl_proximal",),
+    )
+    algorithm = lab.algorithms["ftrl_proximal"]
+    before = algorithm.state_dict()
+    algorithm.predict_proba({"momentum": 1.0})
+    assert algorithm.state_dict() == before
+    for _ in range(40):
+        algorithm.update({"momentum": 1.0}, 1)
+    assert algorithm.predict_proba({"momentum": 1.0}) > 0.60
+
+
 @pytest.mark.parametrize("algorithm", tuple(ALGORITHMS))
 def test_pending_ledger_and_fitted_models_survive_restart(tmp_path, algorithm) -> None:
     path = tmp_path / "online.sqlite3"

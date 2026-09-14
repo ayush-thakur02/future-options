@@ -156,7 +156,7 @@ traded.
 | `--legs / --no-legs` | on | Chart the at-the-money call and put beside the index |
 | `--workers` | configured | CPU workers; `-1` uses all available CPUs |
 | `--learn / --no-learn` | on | Update per-instrument online return learners |
-| `--view` | `research` | Initial panel: `research`, `costs`, `indicators`, or `ai` |
+| `--view` | `research` | Initial panel: `research`, `costs`, `indicators`, `ai`, or `prediction` |
 
 Offline, the feed is **paced against the wall clock** — a one-minute bar takes a
 minute — so the projected candles have seconds to move in. `--speed 60` makes a
@@ -164,8 +164,8 @@ minute take a second.
 
 With credentials it recovers the local tape, fills only missing history, then
 streams the live WebSocket and records ticks and chain samples while it runs.
-Keys `1`–`4` select results, positions, indicators and AI; `j`/`k` scroll the
-strategy grid. See [Dashboard](dashboard.md).
+Keys `1`–`5` select results, positions, indicators, AI and prediction graphs;
+`j`/`k` scroll the strategy grid. See [Dashboard](dashboard.md).
 
 ---
 

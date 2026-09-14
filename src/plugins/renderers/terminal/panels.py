@@ -284,6 +284,50 @@ def indicators(snapshot: MarketSnapshot) -> Panel:
     return Panel(table, title=f"[{TITLE_STYLE}]indicator state[/]", border_style=PANEL_BORDER)
 
 
+def model_diagnostics(snapshot: MarketSnapshot) -> Panel:
+    """Model agreement and horizon shape, separate from headline probability."""
+    if not snapshot.predictions:
+        return Panel(
+            Align.center(Text("model diagnostics appear after training", style="grey50")),
+            title=f"[{TITLE_STYLE}]prediction quality[/]",
+            border_style=PANEL_BORDER,
+        )
+
+    table = Table(expand=True, box=None, header_style="grey50", padding=(0, 1))
+    table.add_column("h", justify="right", width=3)
+    table.add_column("agreement", justify="right", width=9)
+    table.add_column("member range", ratio=1)
+    for prediction in sorted(snapshot.predictions, key=lambda item: item.horizon_min):
+        values = [float(value) for value in prediction.contributions.values()]
+        member_range = f"{min(values):.2f}–{max(values):.2f}" if values else "—"
+        agreement_style = (
+            "bright_green" if prediction.member_agreement >= 0.8
+            else "bright_yellow" if prediction.member_agreement >= 0.6
+            else "bright_red"
+        )
+        table.add_row(
+            f"{prediction.horizon_min}m",
+            Text(f"{prediction.member_agreement:.0%}", style=agreement_style),
+            Text(member_range, style="grey70"),
+        )
+
+    ordered = sorted(snapshot.predictions, key=lambda item: item.horizon_min)
+    probabilities = [item.p_up for item in ordered]
+    edges = [item.edge_after_cost_bps for item in ordered]
+    best = max(ordered, key=lambda item: item.edge_after_cost_bps)
+    footer = Text()
+    footer.append("P(up)  ", style="grey50")
+    footer.append(sparkline(probabilities, width=12), style="bright_cyan")
+    footer.append("  net edge  ", style="grey50")
+    footer.append(sparkline(edges, width=12), style=change_style(max(edges)))
+    footer.append(f"\nleader  {_strongest_member(best)}", style="grey62")
+    return Panel(
+        Group(table, footer),
+        title=f"[{TITLE_STYLE}]prediction quality · model spread[/]",
+        border_style=PANEL_BORDER,
+    )
+
+
 def footer(snapshot: MarketSnapshot, status: str) -> Text:
     """One line: the key to the chart's colours, what drives the projection, and
     how to leave.
@@ -376,6 +420,7 @@ __all__ = [
     "forecasts",
     "header",
     "indicators",
+    "model_diagnostics",
     "projection",
     "signals",
 ]

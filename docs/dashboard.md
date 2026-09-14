@@ -85,6 +85,7 @@ The right panel changes with the numbered views:
 | `2` | CALL and PUT scenarios for each of the next three bars: projected premium, gross move, estimated cost and net value per lot |
 | `3` | Indicator state and plain-language readings such as `overbought`, `strong trend` and `above upper band` |
 | `4` | Each online classifier's BUY/SELL/HOLD view, probability and trust, plus sample count, accuracy, rolling accuracy, P&L and drawdown |
+| `5` | Actual-to-projected mini-graphs for every leg and a one-bar P(up) matrix for every online algorithm |
 
 The full-screen dashboard uses internal row scrolling. `niftypulse research`
 prints the durable scorecards as a sequence of regular tables when native
@@ -115,6 +116,9 @@ whether the move clears the round trip. The **projected candles** panel is the
 path, bar by bar, with the hit rate the projection has scored so far. They are
 different objects and they disagree by design — one is a calibrated probability on
 a fixed horizon, the other a live path that includes the last twenty seconds.
+The **prediction quality** card shows member agreement and the full member
+probability range at each horizon. A strong headline with a wide model range is
+visible disagreement, not false certainty.
 
 ---
 

@@ -197,7 +197,7 @@ def board_footer(board: BoardSnapshot, status: str) -> Text:
     text.append("  next ", style="grey50")
     text.append(f"{legs} bars", style="bright_blue")
     text.append("  │", style="grey35")
-    text.append(" 1 results  2 positions  3 indicators  4 AI  j/k scroll  r refresh  q quit", style="bold white")
+    text.append(" 1 results  2 positions  3 indicators  4 AI  5 prediction  j/k scroll  r refresh  q quit", style="bold white")
     if status:
         text.append("   ")
         text.append(status, style="grey50")
@@ -327,12 +327,89 @@ def scalp_costs(board: BoardSnapshot) -> Panel:
     return Panel(Group(table, note), title="[grey62]position scenarios · next 3 premium bars[/]", border_style=PANEL_BORDER)
 
 
+def prediction_paths(board: BoardSnapshot) -> Panel:
+    """Compact actual-to-forecast trajectory for every instrument."""
+    table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
+    table.add_column("leg", width=7)
+    table.add_column("actual", ratio=2)
+    table.add_column("→ projected", ratio=1)
+    table.add_column("moves", ratio=2)
+    for leg in board.legs:
+        snapshot = leg.snapshot
+        closes = snapshot.candles["close"].tail(18).dropna().to_list()
+        projected = [snapshot.last_price, *(candle.close for candle in snapshot.projections)]
+        moves = " ".join(
+            f"+{candle.horizon}:{candle.change_bps:+.1f}bp"
+            for candle in snapshot.projections[:3]
+        ) or "waiting"
+        table.add_row(
+            leg.label,
+            Text(sparkline(closes, width=18), style=change_style(snapshot.change)),
+            Text(sparkline(projected, width=8), style="bright_blue"),
+            Text(moves, style="bright_blue"),
+        )
+    footer = Text(
+        "Actual and projected segments use independent mini-scales; exact moves are printed in bp.",
+        style="grey50",
+    )
+    return Panel(
+        Group(table, footer),
+        title="[grey62]actual → projected trajectory · next three bars[/]",
+        border_style="bright_blue" if any(leg.snapshot.projections for leg in board.legs) else PANEL_BORDER,
+    )
+
+
+def algorithm_matrix(board: BoardSnapshot) -> Panel:
+    """One-bar online probability from each algorithm, side by side by leg."""
+    labels = [label for label in ("INDEX", "CALL", "PUT") if board.leg(label)]
+    rows: dict[str, dict[str, dict]] = {}
+    trust_values: list[float] = []
+    for label in labels:
+        leg = board.leg(label)
+        signal = leg.snapshot.research.get("ai", {}).get("signals", {}).get(1, {}) if leg else {}
+        for item in signal.get("algorithms", []):
+            rows.setdefault(item["name"], {})[label] = item
+            trust_values.append(float(item.get("trust_score", 0.0)))
+
+    if not rows:
+        return Panel(
+            Align.center(Text("waiting for one completed research bar", style="grey50")),
+            title="[grey62]algorithm agreement · one bar[/]",
+            border_style=PANEL_BORDER,
+        )
+
+    table = Table(expand=True, box=None, padding=(0, 1), header_style="grey62")
+    table.add_column("algorithm", ratio=1)
+    for label in labels:
+        table.add_column(label, justify="right", width=7)
+    for name, by_leg in rows.items():
+        cells = []
+        for label in labels:
+            item = by_leg.get(label)
+            if item is None:
+                cells.append(Text("—", style="grey50"))
+            else:
+                probability = float(item["p_up"])
+                cells.append(Text(f"{probability:.2f}", style=change_style(probability - 0.5)))
+        table.add_row(name, *cells)
+
+    mean_trust = sum(trust_values) / len(trust_values) if trust_values else 0.0
+    footer = Text(f"P(up) at issue · mean evidence trust {mean_trust:.0%} · research only", style="grey62")
+    return Panel(
+        Group(table, footer),
+        title="[grey62]algorithm agreement · one-bar P(up)[/]",
+        border_style=PANEL_BORDER,
+    )
+
+
 __all__ = [
     "ai_scores",
+    "algorithm_matrix",
     "board_footer",
     "board_header",
     "leg_panel",
     "research_scores",
+    "prediction_paths",
     "scalp_costs",
     "strategy_matrix",
     "verdicts",

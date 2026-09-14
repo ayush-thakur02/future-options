@@ -448,6 +448,8 @@ class Session:
                         renderer.view = {"1": "research", "2": "costs", "3": "indicators"}[key]
                     if key == "4":
                         renderer.view = "ai"
+                    if key == "5":
+                        renderer.view = "prediction"
                     if key.lower() == "j":
                         renderer.scroll_strategies(1)
                     if key.lower() == "k":

@@ -7,7 +7,7 @@ Turning 45,000 bars into a calibrated probability that the next few minutes go u
 src/plugins/forecasts/ml_ensemble/
 ├── dataset.py       Dead-banded, hurdle-aware labelling
 ├── splits.py        Purged, embargoed walk-forward validation
-├── models.py        4 base learners + soft-voting ensemble
+├── models.py        6 base learners + configurable soft-voting ensemble
 ├── calibration.py   Twice-gated Platt / isotonic calibration
 ├── metrics.py       Lift-aware evaluation, expected-move curve
 ├── trainer.py       Orchestration and persistence
@@ -132,7 +132,7 @@ Method follows López de Prado, *Advances in Financial Machine Learning*, ch. 7.
 
 `models.py`
 
-Four base learners with genuinely different inductive biases, blended by **soft
+Six base learners with genuinely different inductive biases, blended by **soft
 voting**:
 
 | Model | Why it is here |
@@ -140,7 +140,13 @@ voting**:
 | **LightGBM** | Usually the strongest single model on tabular data of this kind, and fast enough to retrain in a walk-forward loop |
 | **HistGradientBoosting** | sklearn's boosting. Same family, different binning — correlated with LightGBM but not identical |
 | **ExtraTrees** | Randomised bagging. Decorrelated from the boosted models because it fits deep, high-variance trees independently. **This is where most of the ensemble's diversity comes from** |
+| **RandomForest** | Bootstrap aggregation with conventional split selection. Kept below ExtraTrees in the default vote because the two are correlated |
+| **Shrinkage LDA** | A regularised generative covariance model: a smooth, non-tree boundary that tolerates numerous correlated indicators |
 | **LogisticRegression** | A linear baseline. Included partly as a regulariser on the blend, and mostly because if the linear model is competitive with the boosted ones, the features probably are not carrying much signal — which is worth knowing |
+
+The selected models, vote weights, and estimator hyperparameters live in
+`config/plugins/forecast/ml_ensemble.yaml`. Unknown names fail before training;
+LightGBM alone may be skipped when its native runtime is unavailable.
 
 ### Soft voting, not hard
 
@@ -164,20 +170,20 @@ lightgbm_available()   # attempts an import and native load
 
 On macOS, LightGBM's wheel links against OpenMP and importing it fails with a
 `dlopen` error when `libomp` is missing. That is an install problem, not a code
-problem, so the right response is to drop to the remaining three learners rather
+problem, so the right response is to drop to the remaining five learners rather
 than take the platform down.
 
 ### Feature importance
 
 `DirectionEnsemble.feature_importance()` aggregates across models, normalised to
-sum to 1. Tree models contribute `feature_importances_`, logistic regression
-contributes `|coef_|`.
+sum to 1. Tree models contribute `feature_importances_`; logistic regression and
+shrinkage LDA contribute `|coef_|`.
 
 ### Disagreement
 
 `DirectionEnsemble.disagreement()` returns the standard deviation of member
 probabilities. High values mean the models split — visible in the dashboard's
-"model members" panel.
+prediction-quality card as agreement and member range.
 
 ---
 

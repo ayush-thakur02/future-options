@@ -35,7 +35,7 @@ class OnlineResearchLab:
         self,
         state_path: Path,
         *,
-        algorithms: tuple[str, ...] | None = None,
+        algorithms: tuple[str, ...] | Mapping[str, Mapping] | None = None,
         rolling_window: int = 100,
         min_trust_samples: int = 50,
         min_trust_for_action: float = 0.15,

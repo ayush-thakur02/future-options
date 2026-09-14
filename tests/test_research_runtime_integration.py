@@ -4,6 +4,7 @@ import pandas as pd
 
 from core.settings import Settings
 from kernel import Kernel
+from plugins.forecasts.online_research.algorithms import ALGORITHMS
 from plugins.sources.simulated.series import generate_candles
 from runtime.engine import Engine
 
@@ -24,7 +25,7 @@ def test_engine_issues_and_scores_each_online_algorithm_after_research_is_enable
 
     assert engine.online_lab is not None
     assert engine.performance is not None
-    assert engine.online_lab.pending_count == 9  # 3 algorithms x next 3 bars
+    assert engine.online_lab.pending_count == len(ALGORITHMS) * 3
 
     target = engine.history.index[-1] + pd.Timedelta(minutes=1)
     engine._observe_research(
@@ -32,13 +33,9 @@ def test_engine_issues_and_scores_each_online_algorithm_after_research_is_enable
     )
 
     snapshot = engine.snapshot().research["ai"]
-    assert snapshot["pending"] == 6
+    assert snapshot["pending"] == len(ALGORITHMS) * 2
     assert all(card["samples"] == 1 for card in snapshot["scorecards"])
-    assert {card["algorithm"] for card in snapshot["scorecards"]} == {
-        "online_logistic",
-        "passive_aggressive",
-        "gaussian_nb",
-    }
+    assert {card["algorithm"] for card in snapshot["scorecards"]} == set(ALGORITHMS)
     engine.close()
 
 

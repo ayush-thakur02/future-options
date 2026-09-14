@@ -123,6 +123,33 @@ class Trainer:
         self.quiet = quiet
         self.n_jobs = n_jobs
         self.skipped: dict[int, str] = {}
+        config = settings.plugin_config.get("forecast:ml_ensemble", {})
+        configured_models = config.get("models")
+        self.model_names = (
+            tuple(str(name) for name in configured_models) if configured_models else None
+        )
+        self.model_weights = {
+            str(name): float(weight) for name, weight in dict(config.get("weights", {})).items()
+        }
+        self.model_parameters = {
+            str(name): dict(values or {})
+            for name, values in dict(config.get("parameters", {})).items()
+        }
+
+    def _ensemble(self, random_state: int, n_jobs: int = -1) -> DirectionEnsemble:
+        """Build one identically configured ensemble for a fold or final refit."""
+        models = build_models(
+            names=self.model_names,
+            random_state=random_state,
+            n_jobs=n_jobs,
+            parameters=self.model_parameters,
+        )
+        weights = (
+            {name: self.model_weights[name] for name in models if name in self.model_weights}
+            if self.model_weights
+            else None
+        )
+        return DirectionEnsemble(models, weights=weights)
 
     # ------------------------------------------------------------------ single
 
@@ -189,9 +216,7 @@ class Trainer:
                 horizon=horizon,
                 feature_names=feature_names,
             )
-            model = DirectionEnsemble(
-                build_models(random_state=42 + horizon, n_jobs=inner_jobs)
-            )
+            model = self._ensemble(random_state=42 + horizon, n_jobs=inner_jobs)
             model.fit(train_X, train_y, sample_weight=sample_weights(subset))
             probabilities = model.predict_proba(test_X)
             return fold, probabilities, evaluate(test_y, probabilities)
@@ -232,7 +257,8 @@ class Trainer:
         # Fit the conviction -> realised-move curve on out-of-sample data only.
         move_curve = expected_move_curve(oof["forward_return"], calibrated)
 
-        final_model = DirectionEnsemble(build_models(random_state=42 + horizon), feature_names=feature_names)
+        final_model = self._ensemble(random_state=42 + horizon)
+        final_model.feature_names = feature_names
         final_model.fit(dataset.X, dataset.y, sample_weight=sample_weights(dataset))
 
         return HorizonResult(
@@ -289,6 +315,7 @@ class Trainer:
                 "horizon": horizon,
                 "trained_at": datetime.now(IST).isoformat(),
                 "symbol": self.settings.symbol,
+                "bar_minutes": self.settings.bar_minutes,
                 "feature_names": result.dataset.feature_names,
                 "model": result.model,
                 "calibrator": result.calibrator,

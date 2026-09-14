@@ -37,6 +37,13 @@ class Predictor:
             except (FileNotFoundError, Exception) as exc:  # noqa: BLE001
                 self.load_errors[horizon] = str(exc)
                 continue
+            trained_minutes = artifact.get("bar_minutes")
+            if trained_minutes is not None and int(trained_minutes) != self.settings.bar_minutes:
+                self.load_errors[horizon] = (
+                    f"artifact uses {trained_minutes}m bars, runtime uses "
+                    f"{self.settings.bar_minutes}m bars; retrain for this timeframe"
+                )
+                continue
             model = artifact.get("model")
             if model is not None and hasattr(model, "for_single_row_inference"):
                 # Inference is one row at a time in the live engine, and a
@@ -78,7 +85,11 @@ class Predictor:
         if len(present) < len(names) * 0.5:
             return None
 
-        row = features[present].iloc[[-1]]
+        # Preserve the exact schema and order seen during training. Missing
+        # columns become NaN and are handled by the pipeline's train-fitted
+        # imputer; passing only ``present`` columns makes sklearn reject the row
+        # (or, on older versions, silently associates values with wrong names).
+        row = features.iloc[[-1]].reindex(columns=names)
         model = artifact["model"]
 
         try:

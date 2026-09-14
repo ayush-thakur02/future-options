@@ -46,12 +46,24 @@ class TerminalRenderer:
         refresh: float = 1.0,
         forecaster: ProjectionForecaster | None = None,
         console: Console | None = None,
+        chart_ratio: float = CHART_RATIO,
+        max_chart_height: int = MAX_CHART_HEIGHT,
+        min_chart_height: int = MIN_CHART_HEIGHT,
+        middle_height: int = MIDDLE_HEIGHT,
+        bottom_height: int = BOTTOM_HEIGHT,
+        show_model_diagnostics: bool = True,
     ) -> None:
         self.symbol = symbol
         self.timeframe = timeframe
         self.refresh = float(refresh)
         self.forecaster = forecaster
         self.console = console or Console()
+        self.chart_ratio = min(max(float(chart_ratio), 0.15), 0.7)
+        self.max_chart_height = max(int(max_chart_height), 4)
+        self.min_chart_height = max(min(int(min_chart_height), self.max_chart_height), 4)
+        self.middle_height = max(int(middle_height), 6)
+        self.bottom_height = max(int(bottom_height), 6)
+        self.show_model_diagnostics = bool(show_model_diagnostics)
         self._live = None
         self.view = "research"
         self.strategy_offset = 0
@@ -62,8 +74,13 @@ class TerminalRenderer:
         width = max(self.console.width - 2, 60)
         height = max(self.console.height - 4, 24)
 
-        chart_height = int(min(max(height * CHART_RATIO, MIN_CHART_HEIGHT), MAX_CHART_HEIGHT))
-        squeeze = height - chart_height - MIDDLE_HEIGHT - BOTTOM_HEIGHT - 4
+        chart_height = int(
+            min(
+                max(height * self.chart_ratio, self.min_chart_height),
+                self.max_chart_height,
+            )
+        )
+        squeeze = height - chart_height - self.middle_height - self.bottom_height - 4
         if squeeze < 0:
             chart_height = max(chart_height + squeeze, 4)
 
@@ -71,24 +88,33 @@ class TerminalRenderer:
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="chart", size=chart_height + 2),
-            Layout(name="middle", size=MIDDLE_HEIGHT),
-            Layout(name="bottom", size=BOTTOM_HEIGHT),
+            Layout(name="middle", size=self.middle_height),
+            Layout(name="bottom", size=self.bottom_height),
             Layout(name="footer", size=1),
         )
         layout["middle"].split_row(
             Layout(name="forecasts", ratio=3),
             Layout(name="projection", ratio=2),
         )
-        layout["bottom"].split_row(
-            Layout(name="strategies", ratio=2),
-            Layout(name="indicators", ratio=3),
-        )
+        if self.show_model_diagnostics:
+            layout["bottom"].split_row(
+                Layout(name="strategies", ratio=2),
+                Layout(name="model_diagnostics", ratio=2),
+                Layout(name="indicators", ratio=2),
+            )
+        else:
+            layout["bottom"].split_row(
+                Layout(name="strategies", ratio=2),
+                Layout(name="indicators", ratio=3),
+            )
 
         layout["header"].update(panels.header(snapshot, status, self.timeframe))
         layout["chart"].update(panels.chart(snapshot, width, chart_height, self.timeframe))
         layout["forecasts"].update(panels.forecasts(snapshot))
         layout["projection"].update(panels.projection(snapshot, self.forecaster))
         layout["strategies"].update(panels.signals(snapshot))
+        if self.show_model_diagnostics:
+            layout["model_diagnostics"].update(panels.model_diagnostics(snapshot))
         layout["indicators"].update(panels.indicators(snapshot))
         layout["footer"].update(panels.footer(snapshot, status))
         return layout
@@ -135,20 +161,24 @@ class TerminalRenderer:
                 board_panels.leg_panel(leg, panel_width, chart_height, self.timeframe)
             )
         spot_leg = board.spot_leg
-        layout["strategies"].update(
-            board_panels.scalp_costs(board)
-            if self.view == "costs"
-            else board_panels.strategy_matrix(
-                board, offset=self.strategy_offset, limit=max(bottom - 5, 1)
+        if self.view == "prediction":
+            layout["strategies"].update(board_panels.prediction_paths(board))
+            layout["indicators"].update(board_panels.algorithm_matrix(board))
+        else:
+            layout["strategies"].update(
+                board_panels.scalp_costs(board)
+                if self.view == "costs"
+                else board_panels.strategy_matrix(
+                    board, offset=self.strategy_offset, limit=max(bottom - 5, 1)
+                )
             )
-        )
-        layout["indicators"].update(
-            board_panels.ai_scores(board)
-            if self.view == "ai"
-            else panels.indicators(spot_leg.snapshot)
-            if self.view == "indicators" and spot_leg
-            else board_panels.research_scores(board)
-        )
+            layout["indicators"].update(
+                board_panels.ai_scores(board)
+                if self.view == "ai"
+                else panels.indicators(spot_leg.snapshot)
+                if self.view == "indicators" and spot_leg
+                else board_panels.research_scores(board)
+            )
         layout["footer"].update(board_panels.board_footer(board, status))
         return layout
 

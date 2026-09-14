@@ -138,6 +138,26 @@ class Prediction:
         """Expected move net of the round-trip hurdle; negative means untradeable."""
         return abs(self.expected_move_bps) - self.hurdle_bps
 
+    @property
+    def member_disagreement(self) -> float:
+        """Dispersion of model probabilities in [0, 0.5]."""
+        import math
+
+        values = [
+            float(value)
+            for value in self.contributions.values()
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        ]
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+
+    @property
+    def member_agreement(self) -> float:
+        """A UI-friendly 0..1 agreement score; one means members coincide."""
+        return max(0.0, 1.0 - min(self.member_disagreement * 2.0, 1.0))
+
 
 @dataclass(slots=True)
 class ForecastCandle:

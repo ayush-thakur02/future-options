@@ -386,6 +386,35 @@ def test_board_draws_all_three_legs(board, width: int, height: int) -> None:
     assert "plugin strategies" in rendered
 
 
+def test_prediction_view_draws_paths_and_algorithm_matrix(board) -> None:
+    import io
+
+    frame = board.snapshot()
+    for leg in frame.legs:
+        leg.snapshot.research["ai"] = {
+            "signals": {
+                1: {
+                    "algorithms": [
+                        {"name": "ftrl_proximal", "p_up": 0.64, "trust_score": 0.42},
+                        {"name": "adaptive_knn", "p_up": 0.57, "trust_score": 0.31},
+                    ]
+                }
+            }
+        }
+    renderer = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
+    renderer.view = "prediction"
+    renderer.console = Console(width=140, height=44)
+    buffer = io.StringIO()
+    Console(width=140, height=44, file=buffer, force_terminal=False).print(
+        renderer.build_board(frame, "live")
+    )
+    rendered = buffer.getvalue()
+    assert "actual → projected trajectory" in rendered
+    assert "algorithm agreement" in rendered
+    assert "ftrl_proximal" in rendered
+    assert "adaptive_knn" in rendered
+
+
 def test_leg_panels_are_marked_blue_when_a_path_is_drawn(board) -> None:
     """The border says "this chart has a projection" at a glance, per leg."""
     from plugins.renderers.terminal import board as board_panels

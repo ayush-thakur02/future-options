@@ -56,6 +56,15 @@ def fast_settings(tmp_path) -> Settings:
         data_dir=tmp_path / "data",
         model_dir=tmp_path / "artifacts",
         log_dir=tmp_path / "logs",
+        # These tests exercise trainer mechanics repeatedly; model diversity is
+        # covered independently above, so one small learner keeps the suite
+        # focused and fast without changing production YAML defaults.
+        plugin_config={
+            "forecast:ml_ensemble": {
+                "models": ["hist_gbm"],
+                "parameters": {"hist_gbm": {"max_iter": 20}},
+            }
+        },
     )
 
 
@@ -75,6 +84,80 @@ def make_bars(close: np.ndarray, span_hours: float = 6.0) -> pd.DataFrame:
     frame["volume"] = 0.0
     frame["oi"] = 0.0
     return frame
+
+
+# ------------------------------------------------------------- model registry
+
+
+def test_model_registry_includes_diverse_new_learners() -> None:
+    models = build_models(names=("random_forest", "shrinkage_lda"), random_state=3, n_jobs=1)
+    assert set(models) == {"random_forest", "shrinkage_lda"}
+    assert models["random_forest"].named_steps["clf"].n_jobs == 1
+    assert models["shrinkage_lda"].named_steps["clf"].shrinkage == "auto"
+
+
+def test_unknown_model_name_is_rejected_instead_of_becoming_logistic() -> None:
+    with pytest.raises(ValueError, match="unknown batch models"):
+        build_models(names=("typo_model",))
+
+
+def test_model_parameters_are_applied_from_configuration() -> None:
+    models = build_models(
+        names=("random_forest",),
+        n_jobs=1,
+        parameters={"random_forest": {"n_estimators": 17, "min_samples_leaf": 3}},
+    )
+    classifier = models["random_forest"].named_steps["clf"]
+    assert classifier.n_estimators == 17
+    assert classifier.min_samples_leaf == 3
+
+
+def test_single_down_class_never_becomes_certain_up() -> None:
+    class DownOnly:
+        classes_ = np.array([0])
+
+        def predict_proba(self, frame):
+            return np.ones((len(frame), 1))
+
+    ensemble = DirectionEnsemble({"down_only": DownOnly()})
+    ensemble.fitted = True
+    probabilities = ensemble.predict_proba(pd.DataFrame({"x": [1.0, 2.0]}))
+    assert probabilities.tolist() == [0.0, 0.0]
+
+
+def test_ensemble_rejects_negative_weights() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        DirectionEnsemble({"model": object()}, weights={"model": -1.0})
+
+
+def test_predictor_reindexes_partial_features_to_the_training_schema(tmp_path) -> None:
+    from plugins.forecasts.ml_ensemble.predictor import Predictor
+
+    class SchemaModel:
+        def __init__(self) -> None:
+            self.seen = None
+
+        def predict_proba(self, frame):
+            self.seen = frame.copy()
+            return np.array([0.61])
+
+        def member_probabilities(self, frame):
+            return pd.DataFrame({"schema_model": [0.61]}, index=frame.index)
+
+    model = SchemaModel()
+    settings = Settings(horizons=(1,), model_dir=tmp_path)
+    predictor = Predictor(settings)
+    predictor.artifacts[1] = {
+        "horizon": 1,
+        "feature_names": ["a", "b", "missing_at_runtime"],
+        "model": model,
+        "hurdle_bps": 1.0,
+    }
+
+    predictions = predictor.predict(pd.DataFrame({"b": [2.0], "a": [1.0]}))
+    assert len(predictions) == 1
+    assert list(model.seen.columns) == ["a", "b", "missing_at_runtime"]
+    assert pd.isna(model.seen["missing_at_runtime"].iloc[0])
 
 
 # ------------------------------------------------------------ positive control

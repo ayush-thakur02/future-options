@@ -80,12 +80,15 @@ directory. Sample counts include warm-up; **new labels** counts only updates
 made during this run. Existing batch models remain a separate research facility
 through `train`, `models`, and `backtest`; option engines do not use index models.
 
-Alongside that return learner, the `forecast:online_research` plugin runs three
+Alongside that return learner, the `forecast:online_research` plugin runs five
 prequential classifiers: online logistic regression, passive-aggressive
-classification, and online Gaussian Naive Bayes. Each gets its own immutable
+classification, online Gaussian Naive Bayes, sparse adaptive FTRL-Proximal, and
+a bounded recency-weighted KNN for nonlinear local regimes. Each gets its own immutable
 prediction at one-, two-, and three-bar horizons. The plugin learns only after
 the exact target closes and stores its model state and ledger in one SQLite
 transaction under `data/research/online_ai/{live|simulation}/`.
+Every learner's parameters are editable in
+`config/plugins/forecast/online_research.yaml`.
 
 The AI scorecard retains all-time and rolling accuracy, majority-baseline lift,
 Brier score, calibration error, wins, losses, gross/cost/net P&L, profit, loss,

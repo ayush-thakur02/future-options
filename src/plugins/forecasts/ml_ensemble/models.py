@@ -1,6 +1,6 @@
 """Forecasting models.
 
-Four base learners with genuinely different inductive biases, blended by soft
+Six base learners with genuinely different inductive biases, blended by soft
 voting:
 
 * **LightGBM** — gradient-boosted trees. Usually the strongest single model on
@@ -10,6 +10,12 @@ voting:
 * **ExtraTrees** — randomised bagging. Decorrelated from the boosted models
   because it fits deep, high-variance trees independently rather than
   sequentially. This is where most of the ensemble's diversity comes from.
+* **RandomForest** — bootstrap aggregation with conventional split selection.
+  It is deliberately down-weighted by default because it is related to
+  ExtraTrees, but is less sensitive to the latter's random split thresholds.
+* **Shrinkage LDA** — a regularised generative covariance model. This gives the
+  blend a smooth, non-tree decision surface that remains usable when features
+  are numerous and correlated.
 * **Logistic regression** — a linear baseline. It is included partly because it
   regularises the blend, and mostly because if the linear model is competitive
   with the boosted ones, the features are probably not carrying much signal and
@@ -22,12 +28,18 @@ into training, so the imputer lives inside the pipeline and is refit per fold.
 
 from __future__ import annotations
 
+import math
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -51,92 +63,156 @@ def lightgbm_available() -> bool:
     return True
 
 
-def build_lightgbm(random_state: int = RANDOM_STATE, n_jobs: int = -1) -> Pipeline:
+def build_lightgbm(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
     from lightgbm import LGBMClassifier
+
+    options = {
+        "n_estimators": 300,
+        "learning_rate": 0.04,
+        "num_leaves": 31,
+        "max_depth": 6,
+        "min_child_samples": 120,
+        "subsample": 0.8,
+        "subsample_freq": 1,
+        "colsample_bytree": 0.7,
+        "reg_alpha": 0.5,
+        "reg_lambda": 1.0,
+        "random_state": random_state,
+        "n_jobs": n_jobs,
+        "verbose": -1,
+    }
+    options.update(parameters)
 
     return Pipeline(
         [
             ("impute", SimpleImputer(strategy="median")),
             (
                 "clf",
-                LGBMClassifier(
-                    n_estimators=300,
-                    learning_rate=0.04,
-                    num_leaves=31,
-                    max_depth=6,
-                    min_child_samples=120,
-                    subsample=0.8,
-                    subsample_freq=1,
-                    colsample_bytree=0.7,
-                    reg_alpha=0.5,
-                    reg_lambda=1.0,
-                    random_state=random_state,
-                    n_jobs=n_jobs,
-                    verbose=-1,
-                ),
+                LGBMClassifier(**options),
             ),
         ]
     )
 
 
-def build_hist_gradient(random_state: int = RANDOM_STATE, n_jobs: int = -1) -> Pipeline:
+def build_hist_gradient(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
     # max_iter is deliberately modest. HistGradientBoosting converges well before
     # 300 iterations on this data, and the extra time buys nothing — early
     # stopping usually fires around 80-120.
+    options = {
+        "max_iter": 150,
+        "learning_rate": 0.06,
+        "max_depth": 6,
+        "min_samples_leaf": 120,
+        "l2_regularization": 1.0,
+        "early_stopping": True,
+        "validation_fraction": 0.12,
+        "n_iter_no_change": 12,
+        "random_state": random_state,
+    }
+    options.update(parameters)
     return Pipeline(
         [
             ("impute", SimpleImputer(strategy="median")),
             (
                 "clf",
-                HistGradientBoostingClassifier(
-                    max_iter=150,
-                    learning_rate=0.06,
-                    max_depth=6,
-                    min_samples_leaf=120,
-                    l2_regularization=1.0,
-                    early_stopping=True,
-                    validation_fraction=0.12,
-                    n_iter_no_change=12,
-                    random_state=random_state,
-                ),
+                HistGradientBoostingClassifier(**options),
             ),
         ]
     )
 
 
-def build_extra_trees(random_state: int = RANDOM_STATE, n_jobs: int = -1) -> Pipeline:
+def build_extra_trees(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
+    options = {
+        "n_estimators": 250,
+        "max_depth": 12,
+        "min_samples_leaf": 60,
+        "max_features": "sqrt",
+        "class_weight": "balanced_subsample",
+        "random_state": random_state,
+        "n_jobs": n_jobs,
+    }
+    options.update(parameters)
     return Pipeline(
         [
             ("impute", SimpleImputer(strategy="median")),
             (
                 "clf",
-                ExtraTreesClassifier(
-                    n_estimators=250,
-                    max_depth=12,
-                    min_samples_leaf=60,
-                    max_features="sqrt",
-                    class_weight="balanced_subsample",
-                    random_state=random_state,
-                    n_jobs=n_jobs,
-                ),
+                ExtraTreesClassifier(**options),
             ),
         ]
     )
 
 
-def build_logistic(random_state: int = RANDOM_STATE, n_jobs: int = -1) -> Pipeline:
+def build_random_forest(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
+    options = {
+        "n_estimators": 220,
+        "max_depth": 11,
+        "min_samples_leaf": 70,
+        "max_features": 0.35,
+        "class_weight": "balanced_subsample",
+        "random_state": random_state,
+        "n_jobs": n_jobs,
+    }
+    options.update(parameters)
+    return Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("clf", RandomForestClassifier(**options)),
+        ]
+    )
+
+
+def build_shrinkage_lda(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
+    options = {"solver": "lsqr", "shrinkage": "auto"}
+    options.update(parameters)
+    return Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+            ("clf", LinearDiscriminantAnalysis(**options)),
+        ]
+    )
+
+
+def build_logistic(
+    random_state: int = RANDOM_STATE,
+    n_jobs: int = -1,
+    **parameters,
+) -> Pipeline:
+    options = {
+        "C": 0.05,
+        "max_iter": 1500,
+        "class_weight": "balanced",
+        "random_state": random_state,
+    }
+    options.update(parameters)
     return Pipeline(
         [
             ("impute", SimpleImputer(strategy="median")),
             ("scale", StandardScaler()),
             (
                 "clf",
-                LogisticRegression(
-                    C=0.05,
-                    max_iter=1500,
-                    class_weight="balanced",
-                    random_state=random_state,
-                ),
+                LogisticRegression(**options),
             ),
         ]
     )
@@ -146,7 +222,18 @@ BUILDERS = {
     "lightgbm": build_lightgbm,
     "hist_gbm": build_hist_gradient,
     "extra_trees": build_extra_trees,
+    "random_forest": build_random_forest,
+    "shrinkage_lda": build_shrinkage_lda,
     "logistic": build_logistic,
+}
+
+DEFAULT_WEIGHTS = {
+    "lightgbm": 1.25,
+    "hist_gbm": 1.0,
+    "extra_trees": 1.0,
+    "random_forest": 0.75,
+    "shrinkage_lda": 0.7,
+    "logistic": 0.65,
 }
 
 
@@ -154,6 +241,7 @@ def build_models(
     names: Sequence[str] | None = None,
     random_state: int = RANDOM_STATE,
     n_jobs: int = -1,
+    parameters: Mapping[str, Mapping] | None = None,
 ) -> dict[str, Pipeline]:
     """Instantiate the requested base learners.
 
@@ -165,17 +253,25 @@ def build_models(
     the CPU and runs measurably slower than either level alone.
     """
     if names is None:
-        names = [name for name in BUILDERS if name != "lightgbm" or lightgbm_available()]
+        names = tuple(BUILDERS)
+    unknown = sorted(set(names) - set(BUILDERS))
+    if unknown:
+        raise ValueError(
+            f"unknown batch models: {', '.join(unknown)}; available: {', '.join(BUILDERS)}"
+        )
+    configured = parameters or {}
+    unknown_parameters = sorted(set(configured) - set(BUILDERS))
+    if unknown_parameters:
+        raise ValueError(f"parameters configured for unknown models: {', '.join(unknown_parameters)}")
+
     out: dict[str, Pipeline] = {}
     for name in names:
-        if name == "lightgbm":
-            out[name] = build_lightgbm(random_state, n_jobs=n_jobs)
-        elif name == "hist_gbm":
-            out[name] = build_hist_gradient(random_state)
-        elif name == "extra_trees":
-            out[name] = build_extra_trees(random_state, n_jobs=n_jobs)
-        else:
-            out[name] = build_logistic(random_state, n_jobs=n_jobs)
+        if name == "lightgbm" and not lightgbm_available():
+            continue
+        options = dict(configured.get(name, {}))
+        out[name] = BUILDERS[name](random_state=random_state, n_jobs=n_jobs, **options)
+    if not out:
+        raise ValueError("none of the selected batch models is available")
     return out
 
 
@@ -195,7 +291,21 @@ class DirectionEnsemble:
         feature_names: list[str] | None = None,
     ) -> None:
         self.models = models
-        self.weights = weights or {name: 1.0 for name in models}
+        if not models:
+            raise ValueError("an ensemble requires at least one model")
+        unknown_weights = sorted(set(weights or {}) - set(models))
+        if unknown_weights:
+            raise ValueError(f"weights configured for absent models: {', '.join(unknown_weights)}")
+        self.weights = (
+            dict(weights)
+            if weights is not None
+            else {name: DEFAULT_WEIGHTS.get(name, 1.0) for name in models}
+        )
+        for name in models:
+            weight = float(self.weights.get(name, 1.0))
+            if not math.isfinite(weight) or weight < 0.0:
+                raise ValueError(f"weight for {name} must be a finite non-negative number")
+            self.weights[name] = weight
         self.feature_names = feature_names
         self.fitted = False
 
@@ -307,6 +417,10 @@ def _up_probability(model, X: pd.DataFrame) -> np.ndarray:
     if isinstance(model, Pipeline):
         classes = list(model.named_steps["clf"].classes_)
 
+    if classes == [0]:
+        return np.zeros(len(X), dtype="float64")
+    if classes == [1]:
+        return np.ones(len(X), dtype="float64")
     if 1 in classes:
         return probabilities[:, classes.index(1)]
-    return probabilities[:, -1]
+    raise ValueError(f"model exposes unsupported classes {classes!r}; expected binary labels 0 and 1")

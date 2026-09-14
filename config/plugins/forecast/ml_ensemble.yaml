@@ -1,2 +1,66 @@
 # null loads artifacts for all horizons configured in model.horizons.
 horizons: null
+
+# Batch learners used by `niftypulse train`. They are intentionally diverse;
+# adding several near-identical boosted trees would only create false consensus.
+models:
+  - lightgbm
+  - hist_gbm
+  - extra_trees
+  - random_forest
+  - shrinkage_lda
+  - logistic
+
+# Soft-vote influence. Random forest is below ExtraTrees because those two are
+# correlated; the smooth linear/generative baselines regularise the tree vote.
+weights:
+  lightgbm: 1.25
+  hist_gbm: 1.0
+  extra_trees: 1.0
+  random_forest: 0.75
+  shrinkage_lda: 0.7
+  logistic: 0.65
+
+# Estimator hyperparameters. random_state and worker counts are controlled by
+# the trainer so every walk-forward fold stays reproducible and avoids nested
+# CPU oversubscription.
+parameters:
+  lightgbm:
+    n_estimators: 300
+    learning_rate: 0.04
+    num_leaves: 31
+    max_depth: 6
+    min_child_samples: 120
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.7
+    reg_alpha: 0.5
+    reg_lambda: 1.0
+  hist_gbm:
+    max_iter: 150
+    learning_rate: 0.06
+    max_depth: 6
+    min_samples_leaf: 120
+    l2_regularization: 1.0
+    early_stopping: true
+    validation_fraction: 0.12
+    n_iter_no_change: 12
+  extra_trees:
+    n_estimators: 250
+    max_depth: 12
+    min_samples_leaf: 60
+    max_features: sqrt
+    class_weight: balanced_subsample
+  random_forest:
+    n_estimators: 220
+    max_depth: 11
+    min_samples_leaf: 70
+    max_features: 0.35
+    class_weight: balanced_subsample
+  shrinkage_lda:
+    solver: lsqr
+    shrinkage: auto
+  logistic:
+    C: 0.05
+    max_iter: 1500
+    class_weight: balanced

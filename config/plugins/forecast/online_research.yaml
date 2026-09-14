@@ -1,9 +1,26 @@
 # null paths resolve beneath data/research.
 state_path: null
+# A mapping enables each learner and exposes its own tuning knobs. These models
+# learn only from matured, forward outcomes recorded by the research ledger.
 algorithms:
-  - online_logistic
-  - passive_aggressive
-  - gaussian_nb
+  online_logistic:
+    learning_rate: 0.04
+    l2: 0.0001
+  passive_aggressive:
+    aggressiveness: 0.2
+  gaussian_nb:
+    variance_floor: 0.000001
+  ftrl_proximal:
+    alpha: 0.08
+    beta: 1.0
+    l1: 0.002
+    l2: 0.01
+  adaptive_knn:
+    k: 11
+    window: 160
+    half_life: 80.0
+    max_features: 48
+    prior_strength: 2.0
 rolling_window: 100
 min_trust_samples: 50
 min_trust_for_action: 0.15

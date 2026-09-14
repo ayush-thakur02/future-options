@@ -37,7 +37,11 @@ def build(
     **params,
 ) -> OnlineResearchLab:
     path = Path(state_path) if state_path else ctx.settings.data_dir / "research" / "online_ai.sqlite3"
-    if isinstance(algorithms, str):
+    if isinstance(algorithms, dict):
+        selected = {
+            str(name): dict(values or {}) for name, values in algorithms.items()
+        }
+    elif isinstance(algorithms, str):
         selected = (algorithms,)
     else:
         selected = tuple(str(name) for name in algorithms) if algorithms else None

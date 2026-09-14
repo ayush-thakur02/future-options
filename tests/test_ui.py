@@ -25,7 +25,7 @@ from rich.console import Console
 from rich.text import Text
 
 from core.calendar import IST
-from core.types import ForecastCandle, MarketSnapshot
+from core.types import Direction, ForecastCandle, MarketSnapshot, Prediction
 from plugins.forecasts.projection import project_candles
 from plugins.renderers.terminal import TerminalRenderer, render_candles
 from plugins.renderers.terminal.canvas import Grid
@@ -294,6 +294,34 @@ def test_dashboard_renders_without_models(bars) -> None:
         dash.build(snapshot(bars), "no models")
     )
     assert "no trained models loaded" in buffer.getvalue()
+
+
+def test_dashboard_shows_model_agreement_card(bars) -> None:
+    frame = snapshot(bars)
+    frame.predictions = [
+        Prediction(
+            ts=frame.ts,
+            horizon_min=1,
+            p_up=0.68,
+            direction=Direction.UP,
+            confidence=0.36,
+            expected_move_bps=8.0,
+            hurdle_bps=3.0,
+            contributions={"lightgbm": 0.72, "random_forest": 0.64, "logistic": 0.55},
+        )
+    ]
+    import io
+
+    renderer = TerminalRenderer(symbol="NIFTY 50", timeframe="1m")
+    renderer.console = Console(width=130, height=40)
+    buffer = io.StringIO()
+    Console(width=130, height=40, file=buffer, force_terminal=False).print(
+        renderer.build(frame, "live")
+    )
+    rendered = buffer.getvalue()
+    assert "prediction quality" in rendered
+    assert "member range" in rendered
+    assert "55%" in rendered or "0.55" in rendered
 
 
 def test_dashboard_renders_with_empty_candles() -> None:

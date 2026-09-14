@@ -177,7 +177,8 @@ tree.
 | `features:technical` | `include_context` | `true` | Session and calendar features |
 | `advisory:breakeven_gate` | `cost_rate` | `0.012` | Round-trip cost as a fraction of premium |
 | `advisory:breakeven_gate` | `horizon_bars` | `3` | Horizon the requirement is quoted over |
-| `forecast:online_research` | `algorithms` | all three | Optional list of `online_logistic`, `passive_aggressive`, `gaussian_nb` |
+| `forecast:ml_ensemble` | `models`, `weights`, `parameters` | six learners | Batch model selection, soft-vote influence, and estimator hyperparameters |
+| `forecast:online_research` | `algorithms` | all five | Mapping of learner names to parameters: logistic, passive-aggressive, Gaussian NB, FTRL and adaptive KNN |
 | `forecast:online_research` | `rolling_window` | `100` | Matured predictions retained in the rolling score |
 | `forecast:online_research` | `min_trust_samples` | `50` | Evidence needed before trust reaches full sample weight |
 | `forecast:online_research` | `buy_probability`, `sell_probability` | `0.56`, `0.44` | Probability gates for research BUY and SELL classifications |
@@ -185,6 +186,8 @@ tree.
 | `advisory:performance_ledger` | `min_trust_samples` | `50` | Strategy outcomes needed before trust reaches full sample weight |
 | `strategy:ml_forecast` | `horizon`, `min_edge` | `1`, `0.04` | Which trained model, and the noise band |
 | `renderer:terminal` | `refresh` | `1.0` | Seconds between frames |
+| `renderer:terminal` | `chart_ratio`, panel heights | see YAML | Single-view layout sizing |
+| `renderer:terminal` | `show_model_diagnostics` | `true` | Show the agreement/range prediction card |
 
 ---
 
