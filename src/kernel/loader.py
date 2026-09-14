@@ -10,8 +10,8 @@ Two sources, one shape:
    installed package.
 
 A plugin that fails to import does not abort discovery. The failure is recorded
-in the :class:`LoadReport` and surfaced by ``niftypulse doctor``, because one
-broken third-party pack should not stop the platform from trading its own data.
+in the :class:`LoadReport` and reported alongside the rest of the wiring, because
+one broken third-party pack should not stop the platform from trading its own data.
 """
 
 from __future__ import annotations

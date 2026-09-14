@@ -366,10 +366,10 @@ def test_session_drives_a_simulated_feed(offline_session) -> None:
 
 
 class RecordingRenderer:
-    """A renderer that draws only inside its live block, like the terminal one.
+    """A renderer that serves only inside its live block, like the web one.
 
-    Which is the whole point: ``live_update`` outside ``live()`` is a documented
-    no-op, so a frame pushed there is a frame nobody ever sees.
+    Which is the whole point: the socket is bound on entry and released on exit,
+    so a frame pushed outside ``live()`` is a frame nobody can fetch.
     """
 
     def __init__(self) -> None:
@@ -393,9 +393,10 @@ class RecordingRenderer:
 async def test_the_render_loop_draws_inside_the_live_block(offline_session) -> None:
     """The loop has to open the block, or the dashboard never appears at all.
 
-    It took the screen, pushed a frame a second into a renderer that was not
-    drawing, and left the terminal on its own bootstrap output — a running
-    process with a blank screen, which is indistinguishable from a hang.
+    It pushed a frame a second into a renderer that was not serving, and left a
+    process holding bootstrap output with nothing listening on the port — a
+    running dashboard that answers nowhere, which is indistinguishable from a
+    hang.
     """
     renderer = RecordingRenderer()
     session = Session(
@@ -412,28 +413,7 @@ async def test_the_render_loop_draws_inside_the_live_block(offline_session) -> N
     assert renderer.events[0] == "live", "the block must open before the first frame"
     assert "draw" in renderer.events
     assert "draw-outside-live" not in renderer.events
-    assert renderer.events[-1] == "closed", "the screen must be handed back"
-
-
-async def test_non_terminal_renderer_does_not_take_over_keyboard(offline_session, monkeypatch) -> None:
-    renderer = RecordingRenderer()
-    renderer.uses_terminal_keys = False
-    session = Session(
-        kernel=offline_session.kernel,
-        config=SessionConfig(offline=True, days=2, refresh=0.05),
-    )
-    session.renderer = renderer
-
-    def unexpected_terminal_keys():
-        raise AssertionError("a web renderer must leave terminal input alone")
-
-    monkeypatch.setattr("runtime.session.terminal_keys", unexpected_terminal_keys)
-    task = asyncio.create_task(session._render_loop())
-    await asyncio.sleep(0.12)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    assert "draw" in renderer.events
+    assert renderer.events[-1] == "closed", "the port must be released"
 
 
 def test_session_uses_the_broker_when_it_can() -> None:

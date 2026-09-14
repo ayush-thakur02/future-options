@@ -5,7 +5,7 @@ Upstox data. The history store consumes it, which is the only link between the
 two packs and is expressed as a capability rather than an import.
 
 Tags are how the runtime picks a *source*: ``live`` marks this one, ``simulated``
-the other, and ``niftypulse plugins --tag live`` finds it.
+the other, and ``Kernel.entries`` finds either by tag.
 """
 
 from __future__ import annotations

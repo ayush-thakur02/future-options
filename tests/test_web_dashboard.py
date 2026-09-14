@@ -5,20 +5,21 @@ from __future__ import annotations
 import json
 
 import pytest
-from typer.testing import CliRunner
 
-import cli
 from core.settings import Settings
 from kernel import Kernel
 from plugins.renderers.web import WebRenderer, serialize_snapshot
 
 
-def test_web_renderer_is_a_separate_plugin_capability() -> None:
+def test_web_renderer_is_the_registered_renderer() -> None:
     kernel = Kernel.bootstrap(Settings(), with_entry_points=False)
     assert kernel.provider("web_frame") == "renderer:web"
     renderer = kernel.build("renderer:web", open_browser=False)
     assert isinstance(renderer, WebRenderer)
-    assert kernel.provider("frame") == "renderer:terminal"
+
+
+def test_the_session_publishes_through_the_web_renderer(offline_session) -> None:
+    assert isinstance(offline_session.renderer, WebRenderer)
 
 
 def test_board_snapshot_serializes_without_nan(offline_session) -> None:
@@ -102,16 +103,6 @@ def test_web_polling_is_never_slower_than_one_second() -> None:
     renderer = WebRenderer(open_browser=False, refresh_ms=5_000)
 
     assert renderer.refresh_ms == 1_000
-
-
-def test_dashboard_command_advertises_web_server_controls() -> None:
-    result = CliRunner().invoke(cli.app, ["dashboard", "--help"])
-
-    assert result.exit_code == 0
-    assert "--web" in result.stdout
-    assert "--web-host" in result.stdout
-    assert "--web-port" in result.stdout
-    assert "--no-open-browser" in result.stdout
 
 
 @pytest.mark.parametrize(("host", "port"), [("", 5050), ("127.0.0.1", 0), ("127.0.0.1", 70000)])

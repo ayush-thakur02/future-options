@@ -1,8 +1,0 @@
-refresh: 1.0
-chart_ratio: 0.34
-max_chart_height: 16
-min_chart_height: 6
-middle_height: 9
-bottom_height: 9
-# Adds the model agreement/range card to the single-instrument dashboard.
-show_model_diagnostics: true

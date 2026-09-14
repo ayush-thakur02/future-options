@@ -7,8 +7,8 @@ data, indicators, or candlesticks — it knows how to find plugins, build them,
 and connect them through declared capabilities.
 
     kernel = Kernel.bootstrap(settings)
-    kernel.require(["source:simulated", "renderer:terminal"])
-    renderer = kernel.build("renderer:terminal")
+    kernel.require(["source:simulated", "renderer:web"])
+    renderer = kernel.build("renderer:web")
 
 The pieces:
 

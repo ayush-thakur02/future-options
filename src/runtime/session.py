@@ -15,7 +15,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -28,7 +27,6 @@ from kernel import Kernel
 from .bars import BarLoader
 from .board import MarketBoard
 from .engine import Engine
-from .keyboard import terminal_keys
 from .nowcast import NowcastLoop
 
 DEFAULT_DAYS = 15
@@ -58,6 +56,10 @@ class SessionConfig:
     # re-fetched.
     record: bool = True
     research: bool = True
+    # Browser bind overrides. None keeps the value configured for the renderer.
+    web_host: str | None = None
+    web_port: int | None = None
+    open_browser: bool | None = None
 
 
 @dataclass
@@ -99,13 +101,16 @@ class Session:
     # ------------------------------------------------------------- composition
 
     def _build_renderer(self):
-        if "frame" not in self.kernel.registry.capabilities():
+        if "web_frame" not in self.kernel.registry.capabilities():
             return None
-        return self.kernel.build(
-            "renderer:terminal",
-            refresh=self.config.refresh,
-            forecaster=self.engine.forecaster,
-        )
+        overrides = {}
+        if self.config.web_host is not None:
+            overrides["host"] = self.config.web_host
+        if self.config.web_port is not None:
+            overrides["port"] = self.config.web_port
+        if self.config.open_browser is not None:
+            overrides["open_browser"] = self.config.open_browser
+        return self.kernel.build("renderer:web", **overrides)
 
     def bootstrap(self, progress: Callable[[str], None] | None = None) -> Session:
         """Load history and warm everything up, so the first frame is readable.
@@ -120,7 +125,10 @@ class Session:
         if not self.config.offline:
             if not self.live:
                 from plugins.sources import DataUnavailable
-                raise DataUnavailable("Live dashboard requires a valid login. Run `niftypulse login` or explicitly use --offline.")
+                raise DataUnavailable(
+                    "Live dashboard requires a valid Upstox token. Authenticate with "
+                    "plugins.sources.upstox.auth.interactive_login, or start with --offline."
+                )
             report("checking Upstox authentication")
             self.broker.validate_auth()
             report(self.broker.auth_status)
@@ -170,9 +178,6 @@ class Session:
             self.engine.refresh_projection()
 
         report(f"  {len(self.engine.history):,} bars warmed in {time.perf_counter() - warm_started:.1f}s")
-
-        if self.renderer is not None:
-            self.renderer.forecaster = self.engine.forecaster
 
         self._start_recording()
         if self.config.research:
@@ -258,7 +263,7 @@ class Session:
     async def run(self) -> None:
         """Stream data, refresh the projection, and render, until interrupted."""
         if self.renderer is None:
-            raise RuntimeError("no renderer plugin provides the 'frame' capability")
+            raise RuntimeError("no renderer plugin provides the 'web_frame' capability")
         if self.engine.history.empty:
             raise RuntimeError("no bars loaded; check the source and the cache")
 
@@ -429,40 +434,18 @@ class Session:
     async def _render_loop(self) -> None:
         """Redraw at the renderer's cadence; the projection keeps its own.
 
-        Inside the renderer's live block, which is what takes the screen. A
-        renderer draws nothing outside one — its ``live_update`` is a no-op until
-        the block is open — so a loop that pushed frames without it ran happily
-        behind a screen it never took, and the dashboard sat on its bootstrap
-        output looking hung.
+        Inside the renderer's live block, which is what serves the dashboard. A
+        renderer publishes nothing outside one — the socket is bound on entry and
+        released on exit — so a loop that pushed frames without it wrote to a
+        server nobody could reach while the process looked perfectly healthy.
         """
         renderer = self.renderer
         interval = max(float(self.config.refresh), 0.05)
-        key_context = (
-            terminal_keys()
-            if getattr(renderer, "uses_terminal_keys", True)
-            else nullcontext(lambda: "")
-        )
-        with renderer.live(), key_context as read_key:
+        with renderer.live():
             try:
                 while True:
                     if self._fatal_error:
                         raise RuntimeError(self._fatal_error)
-                    key = read_key()
-                    if key.lower() == "q":
-                        return
-                    if key in {"1", "2", "3"}:
-                        renderer.view = {"1": "research", "2": "costs", "3": "indicators"}[key]
-                    if key == "4":
-                        renderer.view = "ai"
-                    if key == "5":
-                        renderer.view = "prediction"
-                    if key.lower() == "j":
-                        renderer.scroll_strategies(1)
-                    if key.lower() == "k":
-                        renderer.scroll_strategies(-1)
-                    if key.lower() == "r":
-                        target = self.board if self.board is not None else self.engine
-                        await asyncio.to_thread(target.refresh_projection)
                     frame = await asyncio.to_thread(self.snapshot)
                     renderer.live_update(frame, self.feed_status)
                     await asyncio.sleep(interval)

@@ -70,7 +70,8 @@ class UpstoxBroker:
                 self.auth_status += " (rejected token skipped)"
             return token
         raise AuthenticationError(
-            "No valid Upstox token. Run `niftypulse login`; API key/secret alone cannot stream prices."
+            "No valid Upstox token. Log in with plugins.sources.upstox.auth.interactive_login; "
+            "API key/secret alone cannot stream prices."
         )
 
     @property
@@ -82,8 +83,8 @@ class UpstoxBroker:
         token = self.token
         if not token:
             raise DataUnavailable(
-                "No Upstox access token. Run `niftypulse login`, set "
-                "UPSTOX_ACCESS_TOKEN, or run offline to use simulated data."
+                "No Upstox access token. Log in with plugins.sources.upstox.auth.interactive_login, "
+                "set UPSTOX_ACCESS_TOKEN, or run offline to use simulated data."
             )
         return token
 

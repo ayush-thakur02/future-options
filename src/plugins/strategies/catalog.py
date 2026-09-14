@@ -8,8 +8,8 @@ registered and lets each describe itself. The practical consequences:
   tuple. Nothing central changes.
 * A pack whose requirements are unmet — the ML strategy without a ``forecast``
   capability — is skipped with a recorded reason rather than crashing the build.
-* ``niftypulse strategies`` and the live engine see exactly the same set, because
-  both go through here.
+* The strategy audit and the live engine see exactly the same set, because both
+  go through here.
 
 The catalog is not a plugin. It is shared machinery *of* the strategy layer, in
 the same way ``kernel.registry`` is shared machinery of the kernel.

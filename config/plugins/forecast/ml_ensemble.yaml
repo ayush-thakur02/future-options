@@ -1,7 +1,7 @@
 # null loads artifacts for all horizons configured in model.horizons.
 horizons: null
 
-# Batch learners used by `niftypulse train`. They are intentionally diverse;
+# Batch learners used by the trainer. They are intentionally diverse;
 # adding several near-identical boosted trees would only create false consensus.
 models:
   - lightgbm

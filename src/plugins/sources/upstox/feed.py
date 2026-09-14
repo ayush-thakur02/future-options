@@ -57,7 +57,10 @@ def authorize_feed_url(access_token: str, timeout: float = 30.0) -> str:
         timeout=timeout,
     )
     if response.status_code == 401:
-        raise AuthenticationError("Upstox rejected the access token (401). Run `niftypulse login`.")
+        raise AuthenticationError(
+            "Upstox rejected the access token (401). Log in again with "
+            "plugins.sources.upstox.auth.interactive_login."
+        )
     if response.status_code != 200:
         raise RuntimeError(
             f"feed authorization failed ({response.status_code}): {response.text[:300]}"

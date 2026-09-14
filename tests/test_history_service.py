@@ -4,10 +4,10 @@ The store underneath these has thorough tests of its own; what was missing was
 coverage of the *policy* on top of it — when to serve the cache, when to fetch,
 what happens with no token, and what happens when the cache is current. That gap
 let a stale attribute reference survive a refactor and reach a user as an
-`AttributeError` on `niftypulse fetch`, which is exactly the kind of bug these
+`AttributeError` on the history load, which is exactly the kind of bug these
 tests exist to prevent.
 
-Every path here is a branch a user can reach from the CLI, so every branch is
+Every path here is a branch a session startup can reach, so every branch is
 exercised.
 """
 
@@ -111,8 +111,8 @@ def test_load_history_with_no_token_and_no_broker_returns_empty(settings) -> Non
 def test_load_history_with_no_token_serves_the_cache(settings, bars) -> None:
     """The path that reached a user as an AttributeError: cache present, no token.
 
-    `niftypulse fetch` without `--offline` and without credentials lands here, so
-    it is not an edge case — it is what happens on a fresh clone with a cache.
+    A history load without `--offline` and without credentials lands here, so it
+    is not an edge case — it is what happens on a fresh clone with a cache.
     """
     seeded(settings, bars)
     source = HistorySource(settings, broker=FakeBroker(token=None))

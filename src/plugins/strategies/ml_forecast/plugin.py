@@ -44,8 +44,8 @@ def build(
     artifact = getattr(predictor, "artifacts", {}).get(horizon)
     if artifact is None:
         raise RuntimeError(
-            f"no trained model for horizon {horizon}m; run `niftypulse train` "
-            f"to enable the ML strategy"
+            f"no trained model for horizon {horizon}m; train it with "
+            f"plugins.forecasts.ml_ensemble.Trainer to enable the ML strategy"
         )
 
     return StrategyPack(

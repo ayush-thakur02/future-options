@@ -25,8 +25,6 @@ class _QuietHandler(WSGIRequestHandler):
 class WebRenderer:
     """Cache live snapshots for Flask while the market session owns cadence."""
 
-    uses_terminal_keys = False
-
     def __init__(
         self,
         *,
@@ -47,8 +45,6 @@ class WebRenderer:
         self.refresh_ms = min(max(int(refresh_ms), 100), 1000)
         self.open_browser = bool(open_browser)
         self.max_candles = max(int(max_candles), 20)
-        self.view = "ai"
-        self.forecaster = None
         self._lock = threading.RLock()
         self._payload: dict[str, Any] = {
             "ready": False,
@@ -144,9 +140,6 @@ class WebRenderer:
         payload["updated_at"] = datetime.now(UTC).isoformat()
         with self._lock:
             self._payload = payload
-
-    def scroll_strategies(self, delta: int) -> None:
-        return None
 
 
 __all__ = ["WebRenderer"]

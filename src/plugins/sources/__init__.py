@@ -8,7 +8,7 @@ Three packs ship here:
 
 A source is a **leaf**: nothing depends on it, so it declares no capability. Which
 one is active is a runtime decision, not a wiring one — an Upstox token decides
-it in ``niftypulse dashboard``, and ``--offline`` forces the simulated one. That
+it in a dashboard session, and ``--offline`` forces the simulated one. That
 is why they carry tags rather than competing for a capability that only one of
 them could win.
 

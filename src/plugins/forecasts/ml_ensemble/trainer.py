@@ -351,7 +351,8 @@ def load_artifact(settings: Settings, horizon: int) -> dict:
     path = settings.model_dir / f"direction_{horizon}m.joblib"
     if not path.exists():
         raise FileNotFoundError(
-            f"no trained model for horizon {horizon}m at {path}. Run `niftypulse train` first."
+            f"no trained model for horizon {horizon}m at {path}. "
+            f"Train it with plugins.forecasts.ml_ensemble.Trainer first."
         )
     return joblib.load(path)
 

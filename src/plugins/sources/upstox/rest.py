@@ -119,7 +119,10 @@ class UpstoxREST:
             if response.status_code == 200:
                 return response.json()
             if response.status_code == 401:
-                raise AuthenticationError("Upstox rejected the access token (401). Run `niftypulse login`.")
+                raise AuthenticationError(
+                    "Upstox rejected the access token (401). Log in again with "
+                    "plugins.sources.upstox.auth.interactive_login."
+                )
 
             # Retry on rate limiting and transient server faults.
             if response.status_code in (429, 500, 502, 503, 504):
