@@ -42,8 +42,7 @@ Display name only.
 ### `bar_minutes`
 **Default:** `1`
 
-Base bar size. `--timeframe` on the `dashboard` and `snapshot` commands overrides
-it for one run.
+Base bar size. `--timeframe` on the launcher overrides it for one run.
 
 > **Changing this invalidates trained models.** Feature windows are expressed in
 > bars, so a model trained on 1-minute bars cannot be applied to 5-minute ones.
@@ -120,8 +119,8 @@ cost hurdle.
 | `cost_bps` | `0.6` | Explicit cost component |
 
 **Slippage is the setting that matters most.** Raising it by a basis point moves
-the hurdle more than most modelling choices will. `backtest --slippage` overrides
-it for one run.
+the hurdle more than most modelling choices will. `CostModel(slippage_bps=…)`
+overrides it for one run.
 
 ---
 
@@ -138,8 +137,9 @@ bars_ahead: 5
 ```
 
 Every mapping is merged into the kwargs the plugin's `build` receives, and the
-`params` block in a plugin's manifest is applied underneath it. Run `niftypulse
-plugins` to see which handles exist. See [Plugins](plugins.md).
+`params` block in a plugin's manifest is applied underneath it. `Kernel.entries()`
+lists the handles that exist — [Operations § Inspect the plugin
+graph](operations.md#inspect-the-plugin-graph). See [Plugins](plugins.md).
 
 Strategy packs use two common sections:
 
@@ -187,16 +187,13 @@ tree.
 | `forecast:online_research` | `min_trust_for_action` | `0.15` | Below this trust, the research classification stays HOLD |
 | `advisory:performance_ledger` | `min_trust_samples` | `50` | Strategy outcomes needed before trust reaches full sample weight |
 | `strategy:ml_forecast` | `horizon`, `min_edge` | `1`, `0.04` | Which trained model, and the noise band |
-| `renderer:terminal` | `refresh` | `1.0` | Seconds between frames |
-| `renderer:terminal` | `chart_ratio`, panel heights | see YAML | Single-view layout sizing |
-| `renderer:terminal` | `show_model_diagnostics` | `true` | Show the agreement/range prediction card |
-| `renderer:web` | `host`, `port` | `127.0.0.1`, `5050` | Flask bind address for `dashboard --web` |
+| `renderer:web` | `host`, `port` | `127.0.0.1`, `5050` | Flask bind address for the dashboard |
 | `renderer:web` | `refresh_ms` | `1000` | Browser snapshot polling interval |
 | `renderer:web` | `open_browser` | `true` | Open the local URL when the renderer starts |
 | `renderer:web` | `max_candles` | `160` | Maximum printed candles sent per instrument |
 
-`--web-host`, `--web-port`, and `--no-open-browser` override the corresponding
-web renderer settings for one dashboard run. Keep the default loopback host unless
+`--host`, `--port`, and `--no-open-browser` override the corresponding web
+renderer settings for one run. Keep the default loopback host unless
 you intentionally want the unauthenticated, read-only view reachable from a
 trusted network.
 

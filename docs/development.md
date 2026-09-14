@@ -64,8 +64,7 @@ documents the failure it prevents:
 
 | Test | The bug it catches |
 |---|---|
-| `test_chart_axis_is_on_every_candle_row` | Chart rows 3 chars wider than the panel interior, so Rich wrapped the price axis onto its own line |
-| `test_render_candles_right_aligns_short_series` | Right-stripping style runs deleted the leading pad, shifting candles to the left edge |
+| `test_the_render_loop_draws_inside_the_live_block` | Frames published without opening the renderer's live block, so the server was never bound and nothing answered on the port |
 | `test_probability_series_is_not_valid_conviction` | Probabilities passed to the backtester where it expected signed conviction, so `abs(0.48)` cleared every threshold |
 | `test_position_sizing_targets_notional_when_affordable` | Position sized as `price × notional` rather than `price × units`, inflating exposure to ₹24 billion |
 | `test_costs_are_plausible_magnitude` | Same bug, caught via an implausible 3.6-million-bps cost drag |
@@ -73,12 +72,11 @@ documents the failure it prevents:
 | `test_donchian_prior_channel_excludes_current_bar` | Breakout channel included the bar under test, so the feature could never fire |
 | `test_hurdle_makes_short_horizons_untrainable` | A sub-cost horizon being trained into a losing model |
 
-> **A regression test that cannot fail is worthless.** The chart-layout guards
-> were verified by reintroducing the original bug and confirming the tests fail —
-> 6 failures across 4 terminal sizes. The first attempt did not reproduce the bug
-> fully (it needed both the rstrip *and* the compensating pad), so the tests
-> passed and would have given false confidence. Always confirm your guard fails
-> against the broken code.
+> **A regression test that cannot fail is worthless.** Each guard above was
+> verified by reintroducing the original bug and confirming the test fails —
+> including the render-loop one, which has to reproduce the bug exactly to fail at
+> all. A guard that passes against the broken code is worse than no guard, because
+> it gives false confidence. Always confirm yours fails first.
 
 ### What is not tested
 
@@ -105,9 +103,10 @@ tests/
 ├── test_ml.py           Labelling, CV, models, calibration, hurdle, training
 ├── test_option_chain.py Pricing identities, the chain, the clock, premium candles
 ├── test_projection.py   Path geometry, decay, tick momentum, the scoreboard
-├── test_board.py        Multi-instrument composition, verdicts, board rendering
+├── test_board.py        Multi-instrument composition and verdicts
 ├── test_runtime.py      Conviction, the engine, the refresh clock, the feed
-└── test_ui.py           Grid, charts, axis, colours, dashboard layout
+├── test_web_dashboard.py  The web renderer, its JSON boundary and its API
+└── test_webapp.py       The launcher: flags, validation, where they land
 ```
 
 The modules follow the tree: one test file per area that has behaviour worth
@@ -177,7 +176,7 @@ The whole installation procedure:
 1. Make a folder under the right kind in `src/plugins/`, with `__init__.py` at
    every level.
 2. Write `plugin.py` with a `MANIFEST` and a `build(ctx, **params)`.
-3. `uv run niftypulse plugins` — it should appear with its capabilities.
+3. Ask the kernel — `Kernel.entries()` should list it with its capabilities.
 4. Add tests in a module of its own.
 
 If it fills a slot something else already fills, either declare a *different*
@@ -205,31 +204,41 @@ advertised — and a test asserts both directions.
 
 See [Strategies § Adding a strategy](strategies.md#adding-a-strategy).
 
-Key guidance: gate on trend quality, dampen rather than veto, and check the
-firing rate with `uv run niftypulse strategies`. **A strategy that holds an
-opinion on nearly every bar will dominate any weighted blend** — SuperTrend did
-exactly that before its quality gate was added.
+Key guidance: gate on trend quality, dampen rather than veto, and check the firing
+rate through `StrategyCatalog` — see
+[Operations § Inspect the strategies](operations.md#inspect-the-strategies).
+**A strategy that holds an opinion on nearly every bar will dominate any weighted
+blend** — SuperTrend did exactly that before its quality gate was added.
 
 ### Add a cost component
 
 Add a field to `CostModel` with a documented default, include it in `per_leg_bps`
 on the correct leg, and note whether GST applies.
 
-### Add a CLI command
+### Add a dashboard section
 
-```python
-@app.command()
-def mycommand(
-    option: int = typer.Option(10, help="What it does"),
-) -> None:
-    """One-line summary shown in --help."""
-    settings = _settings()
-    ...
+Sections are plain HTML in
+`src/plugins/renderers/web/templates/dashboard.html`, each a numbered heading and
+an empty container:
+
+```html
+<section class="section-block">
+  <article class="terminal-card">
+    <div class="card-title">
+      <h2><span>09</span> MY PANEL</h2>
+      <small>WHAT IT SHOWS</small>
+    </div>
+    <div id="my-panel"></div>
+  </article>
+</section>
 ```
 
-Keep option names matching the rest — `--days`, `--offline`, `--horizon`. Use
-`typer.Exit(code=1)` for genuine failures, and `console.print("[red]...[/]")` for
-the message.
+The client fills it from the payload `serialize_snapshot` builds, so a new value
+has to exist in `core.types` — or under a snapshot's `research` map — before it
+can be drawn. Change the browser poll cadence, the bind address or the candle
+limit in `config/plugins/renderer/web.yaml`. New data belongs in `_routes` in
+`server.py`, beside `/api/snapshot` and `/api/health`, and the payload must stay
+JSON-safe: `tests/test_web_dashboard.py` serializes it with `allow_nan=False`.
 
 ### Add a metric
 
@@ -282,10 +291,9 @@ pstats.Stats(pr).sort_stats('cumulative').print_stats(12)
   `src/…/data/`, which is how the entire data layer once stayed out of version
   control without anyone noticing.
 - **The layout is flat.** Everything lives directly under `src/`, so the
-  top-level packages are `core`, `kernel`, `plugins`, `runtime`, `features`,
-  `strategies`, `ml`, `ui`, `live`, `backtest` and `cli`. Any import that crosses
-  a top-level boundary is written absolutely; intra-package imports stay
-  relative.
+  top-level packages are `core`, `kernel`, `plugins`, `runtime` and `backtest`,
+  alongside the `webapp` launcher module. Any import that crosses a top-level
+  boundary is written absolutely; intra-package imports stay relative.
 - **Verify rate assumptions before changing the cost model.** A one basis point
   change in slippage moves the hurdle by 25%.
 
@@ -296,9 +304,7 @@ pstats.Stats(pr).sort_stats('cumulative').print_stats(12)
 ```bash
 uv run ruff check src/ tests/
 uv run pytest
-uv run niftypulse doctor
-uv run niftypulse snapshot               # eyeball a board
-uv run niftypulse dashboard --offline --speed 60
+uv run niftypulse --offline --speed 60   # eyeball the board
 ```
 
 If you changed anything structural — feature count, horizons, cost model, bar

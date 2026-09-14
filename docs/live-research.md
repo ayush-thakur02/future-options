@@ -1,27 +1,25 @@
 # Live research dashboard
 
 ```bash
-niftypulse doctor --live
-niftypulse dashboard --workers -1
-niftypulse research
-niftypulse research --failures --json
-niftypulse research --section ai --limit 100
+uv run niftypulse --workers -1           # the live dashboard
+uv run niftypulse --offline --speed 60   # the same board on generated ticks
 ```
 
-In this checkout the executable is `.venv/bin/niftypulse` if the virtual
-environment is not activated. A terminal around 180 columns × 44 rows gives the
-charts and rule explanations enough room. Use `1` for results, `2` for position
-scenarios, `3` for indicators, `4` for online AI, `5` for prediction graphs,
-`j`/`k` to scroll strategies, `r` to refresh projections, and `q` to exit. The
-online AI scorecard is visible by default.
+The page carries every view at once — results, position scenarios, indicators,
+online AI, prediction graphs and the strategy matrix — so a window around 180
+columns wide gives the charts and rule explanations room. The online AI scorecard
+updates from the first bar. The durable stores behind it are readable without a
+browser; see
+[Operations § Read the research stores](operations.md#read-the-research-stores).
 
 ## Authentication and market data
 
 Startup validates the environment token with Upstox. If Upstox rejects it with
-HTTP 401, the app tries the unexpired token saved by `niftypulse login`. This
-fixes an invalid `.env` token hiding a valid saved login. Neither credential is
-printed or overwritten. If both are rejected, run `niftypulse login` and restart.
-Network errors and rate limits do not trigger a credential fallback.
+HTTP 401, the app tries the unexpired token saved by the login flow. This fixes an
+invalid `.env` token hiding a valid saved login. Neither credential is printed or
+overwritten. If both are rejected, log in again
+(`plugins.sources.upstox.auth.interactive_login`) and restart. Network errors and
+rate limits do not trigger a credential fallback.
 
 Live mode first recovers its local tick journal and materializes recorded ticks
 into closed candles. The history plugin validates the store's provenance and asks
@@ -79,7 +77,8 @@ instrument and timeframe. The last target learned is saved per horizon so a
 restart does not train twice on the same labels. Simulation uses a separate
 directory. Sample counts include warm-up; **new labels** counts only updates
 made during this run. Existing batch models remain a separate research facility
-through `train`, `models`, and `backtest`; option engines do not use index models.
+through the ensemble trainer, the artifact listing and `backtest` — all in
+[Operations](operations.md); option engines do not use index models.
 
 Alongside that return learner, the `forecast:online_research` plugin runs six
 prequential classifiers: online logistic regression, passive-aggressive
@@ -96,8 +95,8 @@ Every learner's parameters are editable in
 At startup, the first live prediction is issued immediately from the warmed
 technical and strategy state. At each exact target close, success/failure and
 net outcome are recorded, the learners update, and the next prediction receives
-the latest per-strategy accuracy and trust. This path never requires the batch
-`train` command.
+the latest per-strategy accuracy and trust. This path never requires batch
+training.
 
 The AI scorecard retains all-time and rolling accuracy, majority-baseline lift,
 Brier score, calibration error, wins, losses, gross/cost/net P&L, profit, loss,
@@ -126,17 +125,19 @@ marked unresolved. No warm-up accuracy is displayed as live accuracy.
 
 `data/research/live.sqlite3` records the instrument, timeframe, run ID, target,
 issue timestamp/price, forecast close/range, realised close, result, error and
-the regime/strategy/model context. `research --failures --json` exports misses
-and that original context. `research --offline` selects the separate simulation
-database. Reports aggregate runs per instrument/timeframe/horizon; repeated
-observations across separate runs are not independent experiments.
+the regime/strategy/model context. It is ordinary SQLite: the `forecasts` table
+holds every issued forecast, and the `status = 'miss'` rows keep the frozen issue
+context of the misses. The simulated run writes the same schema to
+`simulation.sqlite3`. Reports aggregate runs per instrument/timeframe/horizon;
+repeated observations across separate runs are not independent experiments.
 
-`data/research/strategies.sqlite3` holds the strategy ledger. The online AI
+`data/research/strategies.sqlite3` holds the strategy ledger, and the online AI
 state and prediction ledgers are separated by mode and instrument below
-`data/research/online_ai/`. `niftypulse research` prints several normal Rich
-tables instead of opening a full-screen view, so the terminal's native scrollback
-contains the full report. `--section forecasts|ai|predictions|strategies` narrows
-it, `--limit` controls row count, and `--json` emits every selected field.
+`data/research/online_ai/`. Both have readers —
+`StrategyPerformanceLedger` and `OnlineResearchLab` — shown in
+[Operations § Read the research stores](operations.md#read-the-research-stores).
+The dashboard's scorecards come from those same objects, so a script and the page
+cannot disagree.
 
 The position view compares an option's projected resale premium with entry premium,
 quoted spread and configured round-trip charge assumptions. It does not require
@@ -151,7 +152,7 @@ does not observe or claim broker fills.
 
 `--workers -1` uses all CPUs available to the process/container. History requests,
 instrument processing and projection refreshes use bounded worker pools. The
-WebSocket reader and terminal stay on their own event-loop cadence. Updates for
+WebSocket reader and the dashboard serve on their own event-loop cadence. Updates for
 one instrument remain ordered and snapshots are protected from concurrent
 mutation. The tick queue is bounded; overload stops the session with a resync
 error rather than silently dropping data.

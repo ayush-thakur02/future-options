@@ -15,8 +15,10 @@ data/
     └── online_ai/{live|simulation}/<instrument>.sqlite3
 ```
 
-`niftypulse data` prints the inventory; `niftypulse data --verbose` lists every
-partition file.
+The inventory is the store manifest — `StoreManifest(settings.data_dir /
+"manifest.json").read()`, which the environment check in
+[Operations](operations.md#check-the-environment) prints — and every partition
+file is a parquet under `data/`.
 
 ---
 
@@ -46,7 +48,7 @@ for data written once a day and read constantly.
 
 | Dataset | Shard | Written by | Can it be re-fetched? |
 |---|---|---|---|
-| `candles` | trading day | `fetch`, `sync`, `dashboard` | Yes — it is the provider's historical endpoint |
+| `candles` | trading day | a history load, or a dashboard session | Yes — it is the provider's historical endpoint |
 | `ticks` | hour | a live session | **No.** A provider publishes candles, not the tape that produced them |
 | `chain` | hour | a live session, sampled once a minute | **No** — and historical option chains are not published either |
 
@@ -102,7 +104,8 @@ numbers again.
 
 It exists so that "what have I got?" is instant on a store of any size. The
 alternative — scanning the tree — gets slower every day the platform runs, and the
-question is asked on startup, by `doctor`, and by every tool that wants coverage.
+question is asked on startup, by the environment check, and by every tool that
+wants coverage.
 
 It is **advisory, never authoritative**. Delete it and the next write rebuilds it;
 corrupt it and the store still reads correctly, it just takes the slow path to
@@ -112,12 +115,20 @@ find out. The files are the truth.
 
 ## Never fetching twice
 
-`niftypulse sync` and dashboard startup recover the journal first, convert the
-local tick tape into complete session-anchored candles, then check candle
-coverage. The broker is asked only for the missing prefix or tail:
+A history load and dashboard startup recover the journal first, convert the local
+tick tape into complete session-anchored candles, then check candle coverage. The
+broker is asked only for the missing prefix or tail:
 
-```
-niftypulse sync --days 400
+```bash
+uv run python - <<'PY'
+from core.settings import load_settings
+from kernel import Kernel
+from runtime.bars import BarLoader
+
+settings = load_settings()
+bars = BarLoader(Kernel.bootstrap(settings)).load(days=400, refresh=True, quiet=False, offline=False)
+print(f"{len(bars):,} bars cached or fetched")
+PY
 ```
 
 - Cache current → no API calls at all.
@@ -130,9 +141,9 @@ mistaken for a complete warm-up window. Candle manifest entries record whether
 their source was `broker`, `websocket`, `manual`, or `simulation`; simulation
 uses its own instrument key and never suppresses a live backfill.
 
-Open `niftypulse sync --offline` and it will use whatever is cached, or generate a
-series when the cache is empty — which is also how the whole pipeline can be
-exercised without credentials.
+Load with `offline=True` and it will use whatever is cached, or generate a series
+when the cache is empty — which is also how the whole pipeline can be exercised
+without credentials.
 
 ---
 
@@ -143,8 +154,7 @@ renamed to `candles.parquet.migrated`. Silently starting from an empty store
 would look exactly like losing your history, which is why the import is automatic
 and the old file is kept rather than deleted.
 
-`doctor` reports a legacy file as `legacy candle file — run niftypulse sync to
-import` until it has been migrated.
+The environment check reports a legacy file until it has been migrated.
 
 ---
 

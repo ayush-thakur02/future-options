@@ -62,7 +62,7 @@ A kind is the slot a plugin fills. It exists so a handle can read
 | `strategy` | Bar → signed conviction | `trend`, `momentum`, `reversion`, `volatility`, `channels`, `flow`, `regime`, `statistical_anchor`, `ml_forecast` |
 | `forecast` | Conviction → probabilities and projected paths | `ml_ensemble`, `projection`, `online_research` |
 | `advisory` | Board verdicts and measured research outcomes | `breakeven_gate`, `performance_ledger` |
-| `renderer` | A snapshot → something a human reads | `terminal` |
+| `renderer` | A snapshot → something a human reads | `web` |
 | `tool` | Offline research that is not part of the live graph | (reserved) |
 
 Forecast and advisory are deliberately separate. A forecast is a statement about
@@ -101,10 +101,11 @@ Three rules make this work:
    implementations could sensibly both be registered, do not give them the same
    capability.
 
-`niftypulse plugins --capabilities` prints the live index.
+The live index is `kernel.registry.capabilities()` — see
+[Operations § Inspect the plugin graph](operations.md#inspect-the-plugin-graph).
 The bundled tree currently discovers 21 plugins and 43 capabilities. Strategy
 manifests derive each `strategy:<name>` capability from their class tuple, so the
-catalog, CLI and live engine cannot silently disagree about which rules exist.
+catalog and the live engine cannot silently disagree about which rules exist.
 
 ---
 
@@ -183,7 +184,7 @@ forecaster and move in perfect lockstep.
 
 1. Make a folder under the right kind, with an `__init__.py` at every level.
 2. Write `plugin.py` with a `MANIFEST` and a `build`.
-3. Run `niftypulse plugins` — it should appear.
+3. Ask the kernel — `Kernel.entries()` should list it.
 4. Add a test. `tests/test_kernel.py` covers the kernel; a plugin's own
    behaviour belongs in its own test module (`tests/test_board.py` for the
    advisory pack, `tests/test_projection.py` for the projection).

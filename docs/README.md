@@ -17,7 +17,7 @@ projected candles out, with the calls and the puts beside the index.
 | Know what the blue candles are | [Projection](projection.md) |
 | Understand the call/index/put board | [Options](options.md) |
 | Know what is on disk | [Storage](storage.md) |
-| Know what every command does | [CLI reference](cli-reference.md) |
+| Do anything but watch | [Operations](operations.md) |
 | Know what every setting does | [Configuration](configuration.md) |
 | Interpret a training run | [ML pipeline](ml-pipeline.md) |
 | Contribute | [Development](development.md) |
@@ -68,11 +68,11 @@ tuning anything.
 - [ML pipeline](ml-pipeline.md) — labelling, purged validation, models, calibration
 - [Projection](projection.md) — the next three candles, and how they are scored
 - [Options](options.md) — pricing, the chain, the board, the verdicts
-- [Dashboard](dashboard.md) — reading the terminal UI
+- [Dashboard](dashboard.md) — reading the browser terminal
 - [Backtesting](backtesting.md) — execution model, cost model, reporting
 
 ### Reference
-- [CLI reference](cli-reference.md) — every command and flag
+- [Operations](operations.md) — login, history, training, backtests, diagnostics
 - [Configuration](configuration.md) — every setting
 
 ### Working on it

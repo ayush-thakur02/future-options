@@ -129,14 +129,8 @@ and the UI. See [Scalping economics](scalping-economics.md).
 
 ## Running a backtest
 
-```bash
-uv run niftypulse backtest --strategy ensemble --horizon 5
-uv run niftypulse backtest --strategy ml --horizon 5 --threshold 0.15
-uv run niftypulse backtest --strategy vwap_reversion --sweep
-```
-
 ```python
-from niftypulse.backtest import BacktestConfig, CostModel, run_backtest
+from backtest import BacktestConfig, CostModel, run_backtest
 
 config = BacktestConfig(
     horizon=5,
@@ -146,8 +140,14 @@ config = BacktestConfig(
     cost_model=CostModel(slippage_bps=0.5),
 )
 result = run_backtest(bars, scores, config, strategy="ensemble")
-print(result.report.lines())
+for line in result.report.lines():
+    print(line)
 ```
+
+`bars` and `scores` are the two inputs to build:
+[Operations § Backtest a strategy](operations.md#backtest-a-strategy) has the
+complete snippet. For a rule, `scores` is `StrategyCatalog.from_kernel(kernel)
+.get(name).score(StrategyContext(bars=bars, features=features))`.
 
 ### The conviction contract
 
@@ -156,11 +156,11 @@ probability.
 
 > **This is a real trap.** Feeding probabilities instead means `abs(0.48)` — a
 > model with no opinion — clears every threshold below 0.48, so the entry filter
-> silently stops filtering and every bar trades. `_resolve_scores` in the CLI maps
-> model output to `2p − 1` before handing it over, with no opinion at exactly
-> zero. `test_probability_series_is_not_valid_conviction` guards this.
+> silently stops filtering and every bar trades. The model path maps output to
+> `2p − 1` before handing it over, with no opinion at exactly zero.
+> `test_probability_series_is_not_valid_conviction` guards this.
 
-### `--strategy ml`
+### Backtesting the model
 
 Uses the saved walk-forward predictions, not fresh inference:
 
@@ -225,8 +225,8 @@ than raising. A strategy with no signals is a legitimate result.
 
 ## Threshold sweeps
 
-```bash
-uv run niftypulse backtest --strategy ml --horizon 5 --sweep
+```python
+print(run_threshold_sweep(bars, scores, config, strategy="ensemble").to_string())
 ```
 
 Runs the same backtest across entry thresholds from 0.05 to 0.50.
@@ -259,7 +259,7 @@ one exists.
 
 ## Worked example
 
-From the bundled synthetic data, `--strategy ml --horizon 5`:
+From the bundled synthetic data, with the model at a five-bar horizon:
 
 | Metric | Value | Interpretation |
 |---|---|---|

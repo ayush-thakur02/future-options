@@ -5,11 +5,12 @@
 ## Start here
 
 ```bash
-uv run niftypulse doctor
+uv run niftypulse --offline --speed 60   # does the dashboard come up at all?
 ```
 
-Checks Python, LightGBM, credentials, cached data, trained models, and whether
-the market is currently open.
+The environment check — Python, LightGBM, credentials, cached data, trained
+models, and whether the market is open — is the Python snippet in
+[Operations § Check the environment](operations.md#check-the-environment).
 
 ---
 
@@ -24,8 +25,8 @@ brew install libomp
 ```
 
 The platform detects the failure and **drops LightGBM from the ensemble** rather
-than crashing, so you will still get three working learners. `doctor` reports
-`lightgbm: unavailable (brew install libomp)`.
+than crashing, so you will still get three working learners. The environment check
+reports `lightgbm: unavailable (brew install libomp)`.
 
 Training is slightly worse without it — LightGBM is usually the strongest single
 model — but everything still works.
@@ -52,19 +53,21 @@ cd "/Users/ayushthakur/Projects/Future & Options"
 
 No token found. Either:
 
-- `uv run niftypulse login` — needs credentials in `.env`
-- add `--offline` to any command
+- log in with `plugins.sources.upstox.auth.interactive_login` — it needs
+  credentials in `.env` ([Operations](operations.md#authenticate-with-upstox))
+- start the dashboard with `--offline`
 - set `UPSTOX_ACCESS_TOKEN` for a scheduled job
 
 ### Token expired
 
 **Upstox tokens expire at 03:30 IST the next morning.** This is by design, not a
-session length. Re-run `uv run niftypulse login` each morning.
+session length. Log in again each morning with
+`plugins.sources.upstox.auth.interactive_login`.
 
 ### `feed authorization failed (401)`
 
-The token is present but rejected. Usually expired — `doctor` will show `warn`
-next to `upstox token` if that is the case.
+The token is present but rejected. Usually expired — the environment check reports
+`upstox token  missing` if that is the case.
 
 ### `Invalid Instrument key`
 
@@ -91,33 +94,35 @@ The v3 endpoint caps 1–15 minute candles at about one month per request, so 18
 days is about 7 requests. Rate limiting holds to 8/second and 180/minute
 internally.
 
-A long first fetch is expected. **Subsequent runs only fetch the tail** — `sync`
-requests the missing window and nothing else, so a morning run with a current
-cache makes no API calls at all.
+A long first fetch is expected. **Subsequent runs only fetch the tail** — the
+history loader requests the missing window and nothing else, so a morning refresh
+with a current cache makes no API calls at all.
 
 ### `data/candles.parquet.migrated` is sitting in my data folder
 
 That is your history, imported into the partitioned store and moved aside. It is
-safe to delete once `niftypulse data` shows the bars in `candles/`. It is kept by
-default because starting from an empty store would look exactly like losing your
-history. See [Storage](storage.md).
+safe to delete once the store manifest lists the bars under `candles/` — the
+environment check prints that manifest. It is kept by default because starting
+from an empty store would look exactly like losing your history. See
+[Storage](storage.md).
 
-### `doctor` shows `legacy candle file` as a warning
+### A legacy `candles.parquet` is still on disk
 
 A pre-partitioning `candles.parquet` is present and has not been imported yet.
-The import happens on first use of the store, so any of `sync`, `fetch`, or
-`dashboard` will do it.
+The import happens on first use of the store, so any history load or a dashboard
+startup will do it.
 
 ### The store is bigger than I expected
 
 Ticks and chain samples are the bulk of it, and neither can be re-fetched. If you
 need to bound it, delete old `data/ticks/` and `data/chain/` partitions — nothing
-else depends on them. `niftypulse data --verbose` lists every file with its size.
+else depends on them. Every partition is a parquet under `data/`, so
+`find data -name '*.parquet' -exec du -h {} +` shows exactly where the space went.
 
 ### `no candles retrieved`
 
-Every window failed. Usually a bad instrument key or an expired token. Run
-`doctor`.
+Every window failed. Usually a bad instrument key or an expired token. Run the
+environment check in [Operations](operations.md#check-the-environment).
 
 ---
 
@@ -134,7 +139,7 @@ worse than useless, because it would create the impression of a working
 
 Options, in order of preference:
 
-1. **Train a longer horizon.** `--horizons 3,5`
+1. **Train a longer horizon** — pass `horizons=(3, 5)` to `Trainer.train_all`
 2. **Lower `hurdle_multiple`** if you want the signal without a cost margin
 3. **`enforce_cost_hurdle: false`** to study signal alone — the backtest still
    charges costs, so this isolates the signal rather than flattering it
@@ -168,10 +173,10 @@ oversubscribe the CPU and run measurably slower than either alone.
 ### `waiting for realtime learner` in the dashboard
 
 Realtime research is enabled by default and issues its first prediction from the
-warmed state during startup. If it remains waiting, check that `--learn` is on
-and that enough valid history loaded to build features. Batch artifacts are
-optional; `uv run niftypulse train` is only needed for the separate offline
-walk-forward ensemble.
+warmed state during startup. If it remains waiting, check that you did not start
+with `--no-learn` and that enough valid history loaded to build features. Batch
+artifacts are optional; the ensemble trainer is only needed for the separate
+offline walk-forward model.
 
 ### Accuracy is 50% and AUC is 0.50
 
@@ -204,8 +209,8 @@ A genuinely good result should survive all four.
 
 ### `no walk-forward predictions for 5m`
 
-`--strategy ml` needs saved out-of-sample predictions. Run
-`uv run niftypulse train` first.
+The ML backtest needs saved out-of-sample predictions, so train first — see
+[Operations § Train the horizons](operations.md#train-the-horizons).
 
 They are stored at `artifacts/oof_<horizon>m.parquet`. If training skipped that
 horizon as untradeable, there will be no file.
@@ -249,22 +254,6 @@ about ₹1.8 million, and that is the floor. Any smaller target is unreachable.
 
 ## Dashboard
 
-### The chart looks scrambled, with price labels on separate lines
-
-A historical rendering bug, fixed. Two causes compounded:
-
-1. Right-stripping style runs deleted the leading blank pad that right-aligns the
-   chart.
-2. Rows were 3 characters wider than the panel interior, so Rich wrapped the price
-   axis onto its own line.
-
-If you see this, you are running modified code. The guards are in
-`tests/test_ui.py`, verified to fail against the broken version.
-
-### Candles are bunched at the left with the right side empty
-
-The right-alignment pad is being stripped. See above.
-
 ### The replay is too slow — or too fast
 
 `--offline` is **paced against the wall clock** on purpose: one minute of wall
@@ -283,31 +272,30 @@ see it, you are running modified code.
 They are refreshed by `runtime/nowcast.py` on its own clock (`--nowcast`, default
 1 s), not on ticks alone — so they should move even on a quiet tape. If they are
 frozen, check the status line for a feed error, and that `forecast:projection` is
-still registered (`niftypulse plugins --kind forecast`).
+still registered — `Kernel.entries(PluginKind.FORECAST)` lists the forecast
+plugins ([Operations](operations.md#inspect-the-plugin-graph)).
 
 The one deliberate reset: a **roll** re-strikes a leg and clears its path. A leg
 more than two strikes from the money is no longer the trade the board is about.
 
 ### There are no CALL and PUT charts
 
-No `option_chain` capability is registered, or `--no-legs` was passed. Check with
-`niftypulse plugins --capabilities`. Without it the board shows the index alone
+No `option_chain` capability is registered, or `--no-legs` was passed. Check
+`kernel.registry.capabilities()`. Without it the board shows the index alone
 rather than failing.
 
 ### The dashboard prints its startup lines and then nothing
 
 A bug, fixed: the session pushed a frame a second into the renderer without ever
-opening its live block, and `live_update` draws nothing outside one. The whole
-platform was running — feed, projection clock, strategies — behind a screen it
-had never taken, which is why it read as a hang rather than as a crash. The render
-loop now opens the block, and
+opening its live block, so the socket was never bound. The whole platform was
+running — feed, projection clock, strategies — with nothing answering on the
+port, which is why it read as a hang rather than as a crash. The render loop now
+opens the block, and
 `tests/test_runtime.py::test_the_render_loop_draws_inside_the_live_block` fails
 against the old version.
 
-### The dashboard exits immediately
-
-Terminal too small. The layout needs roughly 24 rows and 60 columns. Resize, or
-set a smaller font.
+If the port is already in use, the server cannot bind and the session stops with
+the bind error — pick another with `--port`.
 
 ### `regime: unknown`
 
@@ -332,8 +320,8 @@ verdict so it can be checked. See [Options](options.md).
 ### Timeframe mismatch warning
 
 Feature windows are expressed in bars, so a model trained on 1-minute bars does
-not transfer to 5-minute ones. `--timeframe 5` changes the chart but the forecasts
-still come from the 1-minute models.
+not transfer to 5-minute ones. `--timeframe 5` re-aggregates the charts, but any
+loaded model still comes from 1-minute bars.
 
 To run at another timeframe properly, set `bar_minutes: 5` in configuration,
 refetch, and retrain.
@@ -367,10 +355,15 @@ information about its own confidence, and none of those changes create it.
 The easiest way to fool yourself here is to change the cost assumption to
 something optimistic. Every result is conditional on it.
 
-Before trusting anything:
+Before trusting anything, re-run the backtest with the costs turned up:
 
-```bash
-uv run niftypulse backtest --strategy ml --horizon 5 --slippage 2.0 --notional 500000
+```python
+# the snippet in Operations, with two pessimistic changes
+config = BacktestConfig(
+    horizon=5,
+    notional=500_000,
+    cost_model=CostModel(slippage_bps=2.0),
+)
 ```
 
 If it survives pessimistic costs, it is worth a closer look.
@@ -379,11 +372,11 @@ If it survives pessimistic costs, it is worth a closer look.
 
 ## Plugins
 
-### A plugin is missing from `niftypulse plugins`
+### A plugin is missing from the plugin graph
 
-Either its `plugin.py` failed to import — the report at the bottom of the command's
-output names the module and the error — or it is nested without an `__init__.py`
-at every level, in which case the loader cannot walk into it.
+Either its `plugin.py` failed to import — `kernel.load_report.errors` names the
+module and the error — or it is nested without an `__init__.py` at every level,
+in which case the loader cannot walk into it.
 
 ### `capability 'x' is provided by both A and B`
 
@@ -396,18 +389,21 @@ the runtime pick it by handle.
 
 A composition is missing a pack its consumers declared. `kernel.validate()` lists
 every unsatisfied requirement at once, so fix them together rather than one run at
-a time. `niftypulse plugins` prints them at the bottom.
+a time; the environment check in [Operations](operations.md#check-the-environment)
+prints them.
 
 ### `strategy:ml_forecast skipped: no trained model for horizon 1m`
 
 Normal offline. The pack cannot be built without artifacts, and the catalog records
-the reason and carries on with the rule-based engine. Run `niftypulse train`.
+the reason and carries on with the rule-based engine. Train it — see
+[Operations § Train the horizons](operations.md#train-the-horizons).
 
 ---
 
 ## Still stuck
 
-1. `uv run niftypulse doctor`
+1. the environment check in
+   [Operations](operations.md#check-the-environment)
 2. `uv run pytest` — if tests fail, something is genuinely broken
 3. `uv run pytest tests/test_features.py -k causal` — rules out lookahead
 4. `uv run pytest tests/test_ml.py -k pipeline` — rules out a broken ML pipeline

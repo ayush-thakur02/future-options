@@ -386,19 +386,18 @@ three-bar target. It scores only the exact target bar and stores accuracy, wins,
 losses, gross return, configured cost, profit, loss, net return, mean net return,
 maximum drawdown and conservative trust per strategy and instrument. Missing the
 target expires the record instead of scoring a later price. The ledger survives
-restarts in `data/research/strategies.sqlite3` and is shown by both dashboard view
-1 and `niftypulse research --section strategies`.
+restarts in `data/research/strategies.sqlite3` and is shown both on the dashboard
+and by `StrategyPerformanceLedger` —
+[Operations § Read the research stores](operations.md#read-the-research-stores).
 
 ---
 
 ## Inspecting behaviour
 
-```bash
-uv run niftypulse strategies
-```
-
-Prints every strategy with its category and the share of bars where conviction
-exceeds the entry threshold.
+`StrategyCatalog` lists every strategy with its category and the share of bars
+where conviction exceeds the entry threshold — see
+[Operations § Inspect the strategies](operations.md#inspect-the-strategies) for
+the runnable form.
 
 **"Fires 0%" is a finding, not a bug.** Two strategies report it against the
 index because the index has no order book. Both activate against a futures
@@ -407,13 +406,16 @@ instrument.
 To inspect raw scores:
 
 ```python
+from core.settings import Settings
+from kernel import Kernel
 from plugins.features.technical import build_features
 from plugins.sources.simulated.series import generate_candles
-from plugins.strategies import StrategyContext
+from plugins.strategies import StrategyCatalog, StrategyContext
 
 bars = generate_candles(days=20, seed=7)
 features = build_features(bars)
 context = StrategyContext(bars=bars, features=features)
+catalog = StrategyCatalog.from_kernel(Kernel.bootstrap(Settings()))
 
 for strategy in catalog.all():
     scores = strategy.score(context).dropna()
@@ -442,7 +444,8 @@ gate was added.
    capabilities from there, so nothing else needs registering.
 5. Override `default_weight` on the class only if the standard 0.5 ensemble weight
    is inappropriate.
-6. Run `uv run niftypulse strategies` and check its firing rate is sane.
+6. Check its firing rate is sane —
+   [Operations § Inspect the strategies](operations.md#inspect-the-strategies).
 
 `roc_momentum` sat unregistered through several versions of the old hand-written
 registry, weighting a strategy that never ran. The tuple exists so that cannot

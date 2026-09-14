@@ -10,7 +10,7 @@ kernel/     the plugin runtime: discovery, capability wiring, the event bus
 plugins/    everything that does work, as packs of one or two modules each
 runtime/    composition: what a run needs and how it is driven
 backtest/   offline research against the same code the live path runs
-cli.py      the commands
+webapp.py   the launcher: flags in, one dashboard out
 ```
 
 ---
@@ -41,15 +41,14 @@ src/
 │   │   ├── breakeven_gate/  does the move pay for the position?
 │   │   └── performance_ledger/ strategy accuracy, P&L, drawdown and trust
 │   └── renderers/
-│       ├── terminal/       Rich charts, panels, the board, terminal controls
-│       └── web/            Flask snapshot API, canvas charts, browser terminal
+│       └── web/            Flask snapshot API, SVG charts, browser terminal
 ├── runtime/            session, engine, board, nowcast, conviction, bars
 ├── backtest/           costs, engine, report
-└── cli.py
+└── webapp.py           the launcher that serves the dashboard
 ```
 
-`niftypulse plugins` prints what is actually registered, with capabilities:
-**22 bundled plugins, 44 capabilities**.
+What is actually registered is the kernel's own index:
+**21 bundled plugins, 43 capabilities**.
 
 ---
 
@@ -90,7 +89,7 @@ src/
                  └────────────────┬─────────────────┘
                                   │
                  ┌────────────────▼─────────────────┐
-                 │ renderer:terminal or renderer:web│
+                 │ renderer:web                     │
                  │ charts, verdicts, greeks, scores │
                  └──────────────────────────────────┘
 ```
@@ -137,7 +136,7 @@ platform actually started with: the candle cache imported the provider's REST
 client directly, so pointing the platform at a different provider meant editing
 four modules.
 
-The visible consequence is that `niftypulse plugins` can answer "what is wired to
+The visible consequence is that the plugin index can answer "what is wired to
 what" without running anything, and `kernel.validate()` reports every unsatisfied
 requirement at once.
 

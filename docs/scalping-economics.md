@@ -32,8 +32,8 @@ For NIFTY index futures, a round trip is roughly **3.9 basis points**:
 | GST | 18% on brokerage + exchange | |
 | **Round trip** | **~3.90** | at ₹2,000,000 notional, 75-unit lot |
 
-Run `uv run niftypulse backtest` to see the hurdle computed for your own
-assumptions.
+Run a backtest to see the hurdle computed for your own assumptions — see
+[Operations § Backtest a strategy](operations.md#backtest-a-strategy).
 
 ---
 
@@ -63,8 +63,8 @@ It is set by market structure and transaction costs, not by the quality of your
 model. A perfect forecaster, right every single time, would still be limited to
 those 6% of bars — and would need to be right about *which* ones.
 
-This is the single most useful number in the platform, and it is why
-`uv run niftypulse train` prints it before the model metrics.
+This is the single most useful number in the platform, and it is why the trainer
+prints it before the model metrics.
 
 ---
 
@@ -72,7 +72,7 @@ This is the single most useful number in the platform, and it is why
 
 ### 1. Labelling requires a tradeable move
 
-`ml/dataset.py`
+`plugins/forecasts/ml_ensemble/dataset.py`
 
 ```python
 threshold = max(deadband_atr × ATR, labelling_hurdle_bps / 10_000)
@@ -114,7 +114,8 @@ The ML strategy stays silent unless the expected move clears the hurdle. Most
 bars do not. That is the point.
 
 The expected move is not a guess. It comes from a **conviction-to-move curve**
-fitted on out-of-sample predictions (`ml/metrics.py:expected_move_curve`), which
+fitted on out-of-sample predictions
+(`plugins/forecasts/ml_ensemble/metrics.py:expected_move_curve`), which
 buckets predictions by confidence and measures how far price actually travelled.
 An earlier version used `edge × ATR × √horizon`, which has no basis in the data
 and happily promised moves that never materialised.
@@ -171,10 +172,10 @@ point, shorter is just more expensive.
 
 ### Costs are the highest-leverage parameter
 
-`--slippage` and `--notional` in `config/default.yaml` change conclusions more
-than any modelling choice. A one basis point increase in slippage — entirely
-plausible in fast markets — moves the hurdle by 25% and can eliminate a marginal
-edge outright.
+The slippage you pass to `CostModel` and the notional in `config/default.yaml`
+change conclusions more than any modelling choice. A one basis point increase in
+slippage — entirely plausible in fast markets — moves the hurdle by 25% and can
+eliminate a marginal edge outright.
 
 Before trusting any result, sanity-check the cost inputs. If you have real fill
 data, use it. Do not trust the defaults.

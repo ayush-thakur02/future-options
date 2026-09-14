@@ -7,15 +7,14 @@ and active strategy signal is frozen at issue time and scored when its exact
 target bar closes.
 
 The live board records first-issued forecasts, then measures wins, misses and
-price error as target candles close. Start with `niftypulse doctor --live` and
-`niftypulse dashboard --web --workers -1` for the local browser terminal, or omit
-`--web` for the native terminal UI. Press `1` for research, `2` for positions,
-`3` for indicators, `4` for AI, `5` for prediction graphs, `j`/`k` to scroll
-strategy rows, and `q` to exit.
-The realtime AI scorecard is the default view; no `niftypulse train` step is
-required for it.
-Inspect the vertically scrollable audit trail with `niftypulse research` or export
-it with `niftypulse research --json`.
+price error as target candles close. Start it with `uv run niftypulse`, which
+serves the browser terminal at <http://127.0.0.1:5050>; add `--offline --speed 60`
+to replay a generated series instead of the live feed.
+The realtime AI scorecard is on the page from the first bar — no batch training
+step is required for it.
+Everything that is not a live view — login, history, training, backtests,
+diagnostics — is a library call, and [Operations](docs/operations.md) collects
+each one.
 
 See [Live research](docs/live-research.md) for token fallback, actual option
 contracts, online-learning timing, outcome definitions, and parallel execution.
@@ -90,36 +89,32 @@ Create an app at <https://account.upstox.com/developer/apps>.
 
 ```bash
 cp .env.example .env      # fill in your credentials
-uv run niftypulse login   # opens the Upstox login, stores the token
 ```
 
-Tokens expire at 03:30 IST the next day, so `login` is a once-per-morning step.
+Log in with `plugins.sources.upstox.auth.interactive_login`, which opens the
+Upstox login and stores the token; [Operations](docs/operations.md) has the exact
+call. Tokens expire at 03:30 IST the next day, so it is a once-per-morning step.
 
-**No credentials yet?** Commands that load market data accept `--offline` and
-run on generated data, so you can exercise the whole pipeline first.
+**No credentials yet?** `uv run niftypulse --offline` serves the whole dashboard
+on generated data, so you can exercise the pipeline first.
 
 ## Usage
 
 ```bash
-uv run niftypulse doctor                  # check environment and credentials
-uv run niftypulse fetch --days 180        # download 1-minute history
-uv run niftypulse train                   # train the scalping horizons
-uv run niftypulse dashboard               # live terminal dashboard
-uv run niftypulse dashboard --web         # live browser dashboard (Flask)
-uv run niftypulse dashboard --web --offline --speed 60  # local demo
-
-uv run niftypulse strategies              # list strategies and how often they fire
-uv run niftypulse models                  # list trained artifacts and metrics
-uv run niftypulse research                # AI, strategy, P&L and trust scorecards
-uv run niftypulse backtest --strategy ensemble --horizon 5
-uv run niftypulse backtest --strategy ml --horizon 5 --sweep
+uv run niftypulse                             # live browser dashboard
+uv run niftypulse --offline --speed 60        # generated demo, 60x
+uv run niftypulse --no-legs --refresh 0.5     # index only, twice a second
+uv run niftypulse --port 8080 --no-open-browser
 ```
 
-The browser dashboard uses white, zoom-sharp SVG charts and refreshes every
-second. Its per-leg decision desk and prediction matrix apply AI probability,
-measured trust, projected movement, and transaction-cost/breakeven gates together.
-Click a strategy, AI learner, prediction cell, or indicator to inspect its live
+The dashboard uses white, zoom-sharp SVG charts and refreshes every second. Its
+per-leg decision desk and prediction matrix apply AI probability, measured trust,
+projected movement, and transaction-cost/breakeven gates together. Click a
+strategy, AI learner, prediction cell, or indicator to inspect its live
 calculation and formula.
+
+Login, history, training, backtests and diagnostics are library calls rather than
+commands, and [Operations](docs/operations.md) shows every one of them.
 
 ## Tuning for your costs
 
@@ -134,7 +129,8 @@ model:
   enforce_cost_hurdle: true       # set false to study signal without the gate
 ```
 
-`niftypulse backtest --slippage` and `--notional` override them for a single run.
+`CostModel(slippage_bps=…)` and `BacktestConfig(notional=…)` override them for a
+single run.
 Raising slippage by a basis point moves the hurdle more than most modelling
 choices will.
 
@@ -198,7 +194,7 @@ Full documentation is in [`docs/`](docs/README.md).
 | Know what the blue candles are | [Projection](docs/projection.md) |
 | Understand the call/index/put board | [Options](docs/options.md) |
 | Know what is on disk | [Storage](docs/storage.md) |
-| Look up a command | [CLI reference](docs/cli-reference.md) |
+| Do anything but watch | [Operations](docs/operations.md) |
 | Look up a setting | [Configuration](docs/configuration.md) |
 | Interpret a training run | [ML pipeline](docs/ml-pipeline.md) |
 | Read the dashboard | [Dashboard](docs/dashboard.md) |
@@ -224,13 +220,13 @@ src/
 │   ├── strategies/    8 rule packs · 30 strategies, plus ml_forecast
 │   ├── forecasts/     ml_ensemble · projection · online_research
 │   ├── advisory/      breakeven_gate · performance_ledger
-│   └── renderers/     terminal
+│   └── renderers/     web: the Flask dashboard and its JSON boundary
 ├── runtime/       # session, engine, board, nowcast, conviction, bars
 ├── backtest/      # costs, execution, reporting
-└── cli.py
+└── webapp.py      # the launcher: one command, one dashboard
 
 docs/                      # full documentation, see docs/README.md
-tests/                     # indicator, strategy, storage, AI, runtime and CLI tests
+tests/                     # indicator, strategy, storage, AI, runtime and dashboard tests
 config/
 ├── default.yaml           # platform-wide settings
 └── plugins/               # one YAML file per plugin, nested by kind
@@ -240,8 +236,8 @@ data/                      # partitioned store: candles, ticks, chain
 **Everything is a plugin.** A capability is added by dropping a folder with a
 `plugin.py` into the tree — no registry to edit, no factory to extend. Plugins
 link through declared capabilities rather than imports, so any one can be replaced
-by another that provides the same name. `niftypulse plugins` lists what is wired
-to what: **21 bundled plugins, 43 capabilities**. See [Plugins](docs/plugins.md).
+by another that provides the same name. The kernel's plugin index lists what is
+wired to what: **21 bundled plugins, 43 capabilities**. See [Plugins](docs/plugins.md).
 
 ## Tests
 
@@ -253,7 +249,8 @@ The suite covers indicator correctness, feature causality, split purging,
 execution timing, position sizing, cost accounting, the cost hurdle, plugin
 discovery and capability wiring, option pricing identities, projection geometry
 and its scoreboard, crash recovery and exact-event tape storage, online AI and
-strategy scorecards, terminal rendering, and the ML pipeline end to end.
+strategy scorecards, the dashboard's JSON boundary and API, and the ML pipeline
+end to end.
 
 Some are worth knowing about:
 
@@ -262,9 +259,9 @@ Some are worth knowing about:
 - `test_pipeline_learns_deterministic_pattern` and
   `test_pipeline_finds_no_edge_in_random_walk` bracket the ML pipeline: it must
   find structure when it exists and must not invent it when it does not.
-- `test_chart_axis_is_on_every_candle_row` renders the dashboard at four terminal
-  sizes and asserts no row wrapped. The bug it guards did not exceed the console
-  width, only the panel interior — so a naive width check would have missed it.
+- `test_the_render_loop_draws_inside_the_live_block` asserts frames reach the
+  renderer only inside its live block. The bug it guards served nothing at all on
+  the port while the process looked perfectly healthy.
 - `test_hurdle_makes_short_horizons_untrainable` asserts a horizon whose moves
   cannot cover costs is refused rather than trained into a losing model.
 - `test_every_instrument_gets_its_own_projection` asserts the three charts on the

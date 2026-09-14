@@ -23,7 +23,7 @@ fi
 
 # A fresh empty directory ensures the public tunnel can never serve files from
 # this repository (especially .env). The callback code is copied from the
-# browser address bar and entered into `niftypulse login` manually.
+# browser address bar and entered into the Upstox login prompt manually.
 callback_dir="$(mktemp -d)"
 callback_pid=""
 
@@ -60,7 +60,7 @@ Local OAuth callback is listening on 127.0.0.1:$CALLBACK_PORT.
 Starting Azure Dev Tunnel $TUNNEL_ID ...
 
 Copy the HTTPS URL printed below into Upstox and .env if you have not already.
-Leave this script running while you complete \`niftypulse login\`.
+Leave this script running while you complete the login flow in plugins.sources.upstox.auth.
 Press Ctrl-C when login has finished; the local listener will be removed.
 
 EOF
