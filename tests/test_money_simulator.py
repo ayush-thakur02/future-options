@@ -25,6 +25,7 @@ from plugins.advisory.money_simulator.ledger import SimulationLedger
 from plugins.advisory.money_simulator.policy import (
     BUY,
     HOLD,
+    SELL,
     DecisionPolicy,
     LegState,
     PolicyWeights,
@@ -136,13 +137,24 @@ def simulator(**overrides) -> MoneySimulator:
     return MoneySimulator(config, cost_model=costs())
 
 
+def enter(sim: MoneySimulator, legs, at: datetime, seconds: float = 1.0) -> None:
+    """Decide, then fill.
+
+    Entries are never filled at the price the decision was made on — that price
+    is gone by the time the order exists — so a leg opens on the *next* print.
+    Every test that expects a position therefore needs both moments.
+    """
+    sim.step(list(legs), at)
+    sim.step(list(legs), at + timedelta(seconds=seconds))
+
+
 # ------------------------------------------------------------- rupees per point
 
 
 def test_a_point_on_the_index_is_worth_exactly_the_lot() -> None:
     """24,000 -> 24,020 is +1,300 rupees at 65 units, not +20 and not +30 million."""
     sim = simulator()
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     assert sim.positions["INDEX"].entry_price == 24_000.0
 
     sim.step([index_state(24_020.0)], START + timedelta(seconds=5))
@@ -152,7 +164,7 @@ def test_a_point_on_the_index_is_worth_exactly_the_lot() -> None:
 
 def test_a_loss_of_a_point_costs_the_same_as_a_gain() -> None:
     sim = simulator()
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     position = sim.positions["INDEX"]
     assert position.unrealized(23_980.0) == pytest.approx(-20.0 * LOT)
 
@@ -160,7 +172,7 @@ def test_a_loss_of_a_point_costs_the_same_as_a_gain() -> None:
 def test_the_wallet_never_holds_the_notional() -> None:
     """Risk capital, not exposure: a 65-unit index lot never enters the balance."""
     sim = simulator()
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     wallet = sim.wallets["INDEX"]
     # Only the entry cost has left; the 1.5 million of exposure has not.
     assert wallet.cash == pytest.approx(25_000.0 - sim.positions["INDEX"].entry_cost, abs=1e-6)
@@ -172,7 +184,7 @@ def test_the_wallet_never_holds_the_notional() -> None:
 
 def test_every_position_is_exactly_one_lot() -> None:
     sim = simulator()
-    sim.step([index_state(24_000.0), call_state(120.0, 24_000.0)], START)
+    enter(sim, [index_state(24_000.0), call_state(120.0, 24_000.0)], START)
     assert sim.positions["INDEX"].units == LOT
     assert sim.positions["CALL"].units == LOT
 
@@ -182,7 +194,7 @@ def test_every_position_is_exactly_one_lot() -> None:
 
 def test_costs_are_charged_on_both_legs_of_a_round_trip() -> None:
     sim = simulator()
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     position = sim.positions["INDEX"]
     assert position.entry_cost > 0
 
@@ -208,7 +220,7 @@ def test_costs_are_charged_on_both_legs_of_a_round_trip() -> None:
 def test_an_option_is_charged_the_option_rate_not_the_futures_rate() -> None:
     """A premium's cost is a fraction of the premium, not basis points of notional."""
     sim = simulator()
-    sim.step([call_state(120.0, 24_000.0)], START)
+    enter(sim, [call_state(120.0, 24_000.0)], START)
     trade_cost = sim.positions["CALL"].entry_cost
     # Half of the 1.2% round trip on 120 x 65 = 7,800.
     assert trade_cost == pytest.approx(7_800.0 * 0.012 / 2.0, rel=1e-6)
@@ -220,7 +232,7 @@ def test_an_option_is_charged_the_option_rate_not_the_futures_rate() -> None:
 def test_a_stop_fills_at_its_level_not_at_the_next_print() -> None:
     """A gap between refreshes must not turn a 20-point stop into a rout."""
     sim = simulator()
-    sim.step([index_state(24_000.0, atr=20.0)], START)
+    enter(sim, [index_state(24_000.0, atr=20.0)], START)
     stop = sim.positions["INDEX"].stop_price
     assert stop == pytest.approx(24_000.0 - 1.5 * 20.0)
 
@@ -234,7 +246,7 @@ def test_a_stop_fills_at_its_level_not_at_the_next_print() -> None:
 
 def test_a_target_closes_the_lot_for_a_profit() -> None:
     sim = simulator()
-    sim.step([index_state(24_000.0, atr=20.0)], START)
+    enter(sim, [index_state(24_000.0, atr=20.0)], START)
     target = sim.positions["INDEX"].target_price
     assert target == pytest.approx(24_000.0 + 2.5 * 20.0)
 
@@ -245,7 +257,7 @@ def test_a_target_closes_the_lot_for_a_profit() -> None:
 
 def test_a_position_is_closed_when_the_session_ends() -> None:
     sim = simulator()
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     sim.step([index_state(24_000.0)], START + timedelta(minutes=1), session_open=False)
     assert not sim.positions
     assert sim.closed[-1].exit_reason == "session closed"
@@ -253,7 +265,7 @@ def test_a_position_is_closed_when_the_session_ends() -> None:
 
 def test_entries_wait_for_the_decision_clock_but_exits_do_not() -> None:
     sim = simulator(decision_seconds=30.0, cooldown_seconds=0.0)
-    sim.step([index_state(24_000.0, atr=20.0)], START)
+    enter(sim, [index_state(24_000.0, atr=20.0)], START)
     assert "INDEX" in sim.positions
 
     # Ten seconds on: not a decision moment, but a stop is a price level.
@@ -262,12 +274,183 @@ def test_entries_wait_for_the_decision_clock_but_exits_do_not() -> None:
     assert sim.closed[-1].exit_reason == "stop"
 
 
+# ------------------------------------------------------- every tick matters
+
+
+def test_a_stop_is_tested_on_every_print_not_once_a_second() -> None:
+    """A level the tape crosses and recovers from between refreshes still counts."""
+    sim = simulator()
+    enter(sim, [index_state(24_000.0, atr=20.0)], START)
+    stop = sim.positions["INDEX"].stop_price
+
+    # One print pokes through the stop. Nothing else in this test runs on a clock.
+    sim.mark({"INDEX": stop - 1.0}, START + timedelta(seconds=2))
+
+    assert "INDEX" not in sim.positions, "the stop was not tested on the tick"
+    assert sim.closed[-1].exit_reason == "stop"
+
+
+def test_marking_a_tick_does_not_open_a_position() -> None:
+    """Risk runs on every print; entries stay on the decision clock."""
+    sim = simulator()
+    for step in range(50):
+        sim.mark({"INDEX": 24_000.0 + step}, START + timedelta(seconds=step))
+    assert not sim.positions
+    assert not sim._intents
+    assert sim.steps == 0, "a tick is not a decision"
+
+
+def test_a_target_is_also_visible_to_the_tick_path() -> None:
+    sim = simulator()
+    enter(sim, [index_state(24_000.0, atr=20.0)], START)
+    target = sim.positions["INDEX"].target_price
+
+    sim.mark({"INDEX": target + 5.0}, START + timedelta(seconds=2))
+    assert sim.closed[-1].exit_reason == "target"
+
+
+def test_the_decision_clock_matches_the_configured_cadence() -> None:
+    """Ten seconds by default, and the clock is what it says it is."""
+    sim = simulator()
+    assert sim.config.decision_seconds == 10.0, "the cadence moved off 30s on purpose"
+
+    sim.step([index_state(24_000.0, atr=20.0)], START)
+    first = sim.last_decision_at
+    assert first == START
+
+    # Nine seconds later is not a decision moment.
+    sim.step([index_state(24_000.0, atr=20.0)], START + timedelta(seconds=9))
+    assert sim.last_decision_at == first
+
+    # Eleven is.
+    later = START + timedelta(seconds=11)
+    sim.step([index_state(24_000.0, atr=20.0)], later)
+    assert sim.last_decision_at == later
+
+
+def test_an_entry_waits_for_a_price_the_tape_prints() -> None:
+    """The price a decision was made on is gone by the time the order exists."""
+    sim = simulator()
+    sim.step([index_state(24_000.0)], START)
+
+    assert not sim.positions, "a position was opened at the decision price"
+    assert "INDEX" in sim._intents
+
+    # The next print fills it, and it fills there — not where the view was taken.
+    sim.step([index_state(24_005.0)], START + timedelta(seconds=1))
+    assert sim.positions["INDEX"].entry_price == 24_005.0
+
+
+def test_an_order_with_nothing_to_fill_against_is_pulled() -> None:
+    """A view is about the next few minutes; it does not keep forever."""
+    sim = simulator()
+    sim.step([index_state(24_000.0)], START)
+    assert "INDEX" in sim._intents
+
+    sim.step([index_state(0.0)], START + timedelta(seconds=1))
+    stale = START + timedelta(seconds=sim.config.entry_timeout_seconds + 1)
+    sim.step([index_state(0.0)], stale)
+
+    assert not sim._intents
+    assert not sim.positions
+    assert any("pulled" in decision.reason for decision in sim.decisions)
+
+
+# -------------------------------------------------- the forward path decides
+
+
+def test_a_favourable_tick_alone_does_not_open_a_position() -> None:
+    """The complaint this exists to answer: a print went the right way, so it bought.
+
+    A tick with no projected path behind it has nothing to justify a position —
+    and momentum carries no weight, so it cannot be the reason either.
+    """
+    sim = simulator()
+    state = index_state(24_000.0)
+    state.projections = ()
+    state.index_projections = ()
+    state.micro = 1.0
+    state.signals = signals(1.0)
+
+    sim.step([state], START)
+    assert not sim._intents
+    assert not sim.positions
+
+    action, reason = sim.policy.action_for(sim.views["INDEX"], has_position=False)
+    assert action == HOLD
+    assert "no projected path" in reason
+
+
+def test_an_entry_needs_the_projected_path_to_lead_the_view() -> None:
+    """Strong rules are not enough on their own; the forward view has to carry it."""
+    policy = DecisionPolicy(units=LOT)
+    state = index_state(24_000.0, bps=0.3)
+    state.signals = signals(1.0)
+
+    view = policy.view_for(state, costs())
+    assert view.leading_source != "projection"
+    action, reason = policy.action_for(view, has_position=False)
+    assert action == HOLD
+    assert "does not lead" in reason
+
+
+def test_an_entry_is_refused_when_the_path_bends_back() -> None:
+    """A forecast that turns against the trade inside its own horizon is not one.
+
+    Whichever side the view ends up taking, the bar that points the other way is
+    the forecast saying the position should be closed before its target — so there
+    is no reason to open it.
+    """
+    policy = DecisionPolicy(units=LOT)
+    state = index_state(24_000.0)
+    up = projection(24_000.0, 8.0 / 3)
+    down = projection(up[-1].close, -40.0)
+    state.index_projections = (up[0], up[1], down[0])
+
+    view = policy.view_for(state, costs())
+    assert view.horizon_directions == (1, 1, -1)
+    action, reason = policy.action_for(view, has_position=False)
+    assert action == HOLD
+    assert "disagrees" in reason
+    # And the reason names the bars that disagree, so a reader can see which.
+    assert "+1m" in reason and "+2m" in reason
+
+
+def test_every_bar_of_the_path_must_point_where_the_trade_does() -> None:
+    policy = DecisionPolicy(units=LOT)
+    view = policy.view_for(index_state(24_000.0), costs())
+    assert view.horizon_directions == (1, 1, 1)
+    assert policy.action_for(view, has_position=False)[0] == BUY
+
+    falling = policy.view_for(index_state(24_000.0, bps=-8.0), costs())
+    assert falling.horizon_directions == (-1, -1, -1)
+    assert policy.action_for(falling, has_position=False)[0] == SELL
+
+
+def test_a_puts_path_is_read_in_the_puts_own_direction() -> None:
+    """The projected path is the index's, so it flips with the leg's sign."""
+    policy = DecisionPolicy(units=LOT)
+    view = policy.view_for(put_state(120.0, 24_000.0), costs())
+    assert view.view > 0
+    assert view.horizon_directions == (1, 1, 1), "a long put follows a falling index"
+    assert policy.action_for(view, has_position=False)[0] == BUY
+
+
+def test_zero_weight_momentum_does_not_count_as_confirmation() -> None:
+    """Switching a source off has to remove its vote, not just its arithmetic."""
+    policy = DecisionPolicy(units=LOT, weights=PolicyWeights(momentum=0.0))
+    view = policy.view_for(index_state(24_000.0), costs())
+    _, total = view.agreement
+    assert total == 2, "a weighted-out source is not an opinion"
+    assert "momentum" not in [item.source for item in view.contributions if item.weight > 0]
+
+
 # --------------------------------------------------------------------- policy
 
 
 def test_a_bearish_index_turns_into_a_long_put() -> None:
     sim = simulator()
-    sim.step([put_state(120.0, 24_000.0)], START)
+    enter(sim, [put_state(120.0, 24_000.0)], START)
     assert "PUT" in sim.positions
     assert sim.positions["PUT"].direction is Direction.UP
 
@@ -278,7 +461,7 @@ def test_a_put_agrees_with_the_sources_that_agree_with_it() -> None:
     view = policy.view_for(put_state(120.0, 24_000.0), costs())
     assert view.view > 0, "a bearish index view must be a bullish premium view for a put"
     agree, total = view.agreement
-    assert agree == total == 3
+    assert agree == total == 2
 
 
 def test_an_option_hurdle_includes_the_decay_it_pays_while_held() -> None:
@@ -343,14 +526,16 @@ def test_an_entry_needs_the_round_trip_to_be_paid_for() -> None:
 
 def test_a_drawn_down_wallet_borrows_and_trades_again() -> None:
     sim = simulator(cooldown_seconds=0.0)
-    sim.step([index_state(24_000.0, atr=150.0)], START)
+    enter(sim, [index_state(24_000.0, atr=150.0)], START)
     sim.step([index_state(23_600.0, atr=150.0)], START + timedelta(seconds=5))
 
     wallet = sim.wallets["INDEX"]
     assert wallet.cash < 12_500.0, "the loss must genuinely exhaust the leg"
     assert sim.reserve.deployed == pytest.approx(0.0)
 
-    sim.step([index_state(23_600.0, atr=150.0)], START + timedelta(minutes=1))
+    # The top-up happens where the lot is funded, which is the fill and not the
+    # judgement — nothing is bought until a price prints against the order.
+    enter(sim, [index_state(23_600.0, atr=150.0)], START + timedelta(minutes=1))
     assert wallet.reserve_drawn > 0
     assert sim.reserve.remaining < 200_000.0
     assert sim.positions["INDEX"], "a topped-up leg must be able to invest again"
@@ -395,7 +580,7 @@ def test_wallets_survive_a_restart(tmp_path) -> None:
         ledger=SimulationLedger(path, "simulation"),
         cost_model=costs(),
     )
-    first.step([index_state(24_000.0)], START)
+    enter(first, [index_state(24_000.0)], START)
     first.step([index_state(24_000.0)], START + timedelta(minutes=10))
     expected = first.wallets["INDEX"].cash
     assert first.closed
@@ -415,7 +600,7 @@ def test_live_and_simulation_books_are_separate(tmp_path) -> None:
     paper = SimulationLedger(money, "simulation")
 
     sim = MoneySimulator(SimulatorConfig(), ledger=paper, cost_model=costs())
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     sim.step([index_state(24_000.0)], START + timedelta(minutes=10))
 
     assert paper.totals()["trades"] == 1
@@ -428,7 +613,7 @@ def test_a_reset_hands_every_leg_its_opening_balance_back(tmp_path) -> None:
         ledger=SimulationLedger(tmp_path / "money.sqlite3", "simulation"),
         cost_model=costs(),
     )
-    sim.step([index_state(24_000.0)], START)
+    enter(sim, [index_state(24_000.0)], START)
     sim.step([index_state(24_000.0)], START + timedelta(minutes=10))
     assert sim.total_pnl() != 0
 
@@ -446,7 +631,7 @@ def test_the_snapshot_is_json_safe_and_carries_the_policy() -> None:
     import json
 
     sim = simulator()
-    sim.step([index_state(24_000.0), call_state(120.0, 24_000.0)], START)
+    enter(sim, [index_state(24_000.0), call_state(120.0, 24_000.0)], START)
     payload = json.loads(json.dumps(sim.snapshot()))
 
     assert payload["lots"] == LOT

@@ -227,8 +227,27 @@ class MarketBoard:
             if derivative is not None:
                 leg.engine.on_tick(derivative)
 
+        self._mark_simulator(tick.ts)
         self.roll_if_needed(spot)
         return closed
+
+    def _mark_simulator(self, moment) -> None:
+        """Let the paper book react to one print.
+
+        Every tick, not the refresh clock: a stop is a price level, and a level
+        tested once a second is one the tape gets to cross and come back from in
+        between. Nothing is *judged* here — the decision to open a position stays
+        on its own slower clock.
+        """
+        if self.simulator is None or not self.legs:
+            return
+        try:
+            self.simulator.mark(
+                {leg.label: leg.engine.last_price for leg in self.legs},
+                moment,
+            )
+        except Exception as exc:  # noqa: BLE001 — the book must not take the board down
+            self.log.warning("money simulator mark failed: %s", exc)
 
     def _leg_tick(self, leg: BoardLeg, spot: float, index_tick: Tick) -> Tick | None:
         """The premium tick a leg would have printed at this index price."""

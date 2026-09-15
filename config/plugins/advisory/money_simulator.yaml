@@ -17,9 +17,14 @@ reserve: 200000.0
 # One lot of the index, call or put. All three trade the same size.
 lot_size: 65
 
-# How often entries are considered. Risk is still checked on every refresh: a
-# stop that is only tested once a minute is not a stop.
-decision_seconds: 30.0
+# How often entries are considered. Risk is checked on every tick, not on this:
+# a stop tested once a second is one the tape gets to cross and come back from
+# in between.
+decision_seconds: 10.0
+
+# An approved entry waits for a price the tape actually prints. If none arrives
+# within this long the view that justified it has gone stale and it is pulled.
+entry_timeout_seconds: 30.0
 
 # Forward horizon the projection is read over, in bars.
 horizon_bars: 3
@@ -35,7 +40,13 @@ entry_view: 0.15
 min_edge_bps: 0.0
 
 # Sources that must lean the way the trade does before it is taken.
-min_confirmations: 1
+min_confirmations: 2
+
+# An entry must be led by the projected path, and every bar of that path must
+# point where the trade does. This is what stops a single favourable tick from
+# opening a position: momentum carries no weight at all (see `weights` below),
+# so the forward view has to be the reason.
+require_projection: true
 
 # A wallet below this fraction of its opening balance borrows from the reserve.
 min_equity_fraction: 0.5
@@ -68,12 +79,17 @@ projection_scale_bps: 4.0
 
 # How much each source counts. Renormalised over the sources actually present, so
 # a missing model does not silently dilute the others.
+#
+# Momentum is zero on purpose and it is the whole of "a tick is not a thesis":
+# it is the last few seconds of tape, so any weight at all lets one favourable
+# print carry a view over the entry threshold. Raise it to study tick-reactive
+# entries.
 weights:
   strategy: 1.0
-  ai: 0.9
-  model: 0.6
-  projection: 1.2
-  momentum: 0.4
+  ai: 0.8
+  model: 0.5
+  projection: 1.5
+  momentum: 0.0
 
 # Set a path to override data/research/money_simulator/<mode>.sqlite3.
 state_path: null

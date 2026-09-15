@@ -64,26 +64,69 @@ computes** into one signed view per leg.
 
 | Source | What it contributes | Weight |
 |---|---|---|
+| `projection` | the projected path over the horizon, squashed to [−1, 1] | 1.5 |
 | `strategies` | the rule ensemble's blended score, each rule weighted by its measured trust | 1.0 |
-| `online_ai` | the online learners' P(up) edge, shrunk by their trust score | 0.9 |
-| `model` | the batch ensemble's edge, averaged over the horizons it reports | 0.6 |
-| `projection` | the projected path over the horizon, squashed to [−1, 1] | 1.2 |
-| `momentum` | the last seconds of tape | 0.4 |
+| `online_ai` | the online learners' P(up) edge, shrunk by their trust score | 0.8 |
+| `model` | the batch ensemble's edge, averaged over the horizons it reports | 0.5 |
+| `momentum` | the last seconds of tape | **0.0** |
 
 The blend is renormalised over the sources **actually present**. Offline, with no
-trained artifacts, the four remaining sources read as a full opinion rather than
-as three quarters of one — the alternative silently dilutes every reading by the
+trained artifacts, the remaining sources read as a full opinion rather than as
+three quarters of one — the alternative silently dilutes every reading by the
 weight of a model that is not there.
 
 Each contribution is kept alongside the total and shipped to the panel, so a
 decision can be argued with. Click the view line on any wallet.
+
+### A tick is not a thesis
+
+Momentum carries **zero** weight, and that is a decision rather than an omission.
+It is the last few seconds of tape, so any weight at all lets one favourable print
+carry a view over the entry threshold — a position opened on the tick that just
+happened rather than on where the next few minutes are projected to go.
+
+The projection is anchored on the live price, so a print still moves it. What a
+print cannot do is *be the reason*. Two gates enforce that:
+
+- **The projection has to lead the view.** The largest weighted contribution has
+  to be the projected path. Strong rules with a weak forecast is a reason to stand
+  aside, not a reason to trade — the money is made by the next few minutes moving,
+  and nothing else in the blend says anything about that.
+- **Every bar of the path has to point where the trade does.** Not just the end of
+  it. A path that turns within its own horizon is the forecast saying the position
+  should be closed before its target, so there is no reason to open it. The
+  refusal names the bars that disagree.
+
+A leg with no projected path at all is refused outright, and the projection is
+weighted *out* rather than entered as a confident zero, so it cannot dilute the
+sources that do have something to say.
+
+### A rule's trust is a weight, and it can be negative
+
+Each rule's measured trust is signed, in **[−1, 1]**, and it does two things.
+
+It sets how heavily the rule counts in the ensemble:
+`weight = 0.75 + 0.5 × trust`, so an unproven rule keeps three quarters of its
+prior, a discredited one a quarter, and a proven one a quarter more. The weight
+never goes negative: inverting a rule that has simply been wrong for a while is a
+much larger claim than the evidence supports — it is down-weighted, not flipped.
+
+And it is fed to the online learners. Every rule's score reaches the AI
+individually, but so does the **trust-weighted blend** of all of them
+(`strategy_meta__weighted`), how much of the ensemble is actually trusted
+(`strategy_meta__trust_mass`), and how split it is (`strategy_meta__dissent`). The
+pair and triple interaction features are scaled by the trust their participants
+have earned, because two rules that have never been right together are not the
+same evidence as two that have.
 
 ### A leg's view is not the index's view
 
 A call gains when the index gains. A put gains when the index falls. The sign is
 carried as `index_beta`, and it is why a put that every source agrees on reads as
 unanimous agreement rather than unanimous dissent — contributions are compared in
-**index** space, never against the leg's own view.
+**index** space, never against the leg's own view. The per-bar path check flips
+with the same sign, so a put whose forecast is exactly right does not read as a
+forecast pointing the other way.
 
 The same distinction applies to the projection. An option leg cannot report the
 underlying's path: its own projected series is a levered premium path that moves
@@ -174,25 +217,36 @@ is positive while the reserve is drawn is a book that has not yet paid for itsel
 
 ---
 
-## Two clocks
-
-The split is the point.
+## Three clocks, and strict fills
 
 | | Cadence | Why |
 |---|---|---|
-| Risk — stops, targets, ruin | every refresh (~1 s) | a stop that is only tested once a minute is not a stop, it is a hope |
-| Entries | `decision_seconds` (30 s) | an entry is a judgement about the next few minutes; re-taking it every second buys nothing but noise |
+| Risk — stops, targets, ruin | **every tick** | a level tested once a second is one the tape gets to cross and come back from in between |
+| Entries — what may open | `decision_seconds` (10 s) | an entry is a judgement about the next few minutes; re-taking it every second buys nothing but noise |
+| Fills — what actually opens | the next price that prints | the price a decision was made on is gone by the time the order exists |
+
+That last row is the strict-money part. A fill never happens at the price that
+generated it: the decision creates an **order**, and the order fills at the first
+price the tape delivers afterwards. It is the same discipline the backtester
+follows — *execution enters on the next bar's open* — and it is why an order that
+nobody prices within `entry_timeout_seconds` is **pulled** rather than filled at
+whatever stale price is lying around.
 
 Exits, in priority order: **stop → target → time → reversal → session close**.
 
 - Stops and targets are **resting orders and fill at their level**. Filling at
-  whatever the next refresh happened to see would let a two-second gap turn a
+  whatever the next print happened to be would let a two-second gap turn a
   20-point stop into a 300-point rout and make every stop look like a catastrophe.
 - `time` and `reversal` are market orders and fill at the tape.
 - A reversal waits out `min_hold_seconds`; a stop does not.
-- Nothing is carried overnight — the session close flattens everything.
+- Nothing is carried overnight — the session close flattens everything and pulls
+  any order still working.
 - A leg whose equity reaches zero is closed and then topped up on its next flat
   step, which is the "recover the loss so it can keep going" case.
+
+The wallet is only touched where a lot is funded or settled, so the top-up from
+the reserve happens at the **fill**, not at the judgement — an order that is
+pulled never borrows anything.
 
 ---
 
@@ -246,9 +300,10 @@ Dashboard section **02**, above the charts.
   view line, and win rate / costs paid / reserve used / drawdown.
 - **Click the view line** for the full calculation — every source, its value, its
   weight and its weighted contribution, next to the projected move, the round-trip
-  hurdle and the resulting edge.
-- Two tables: the decision log (including every refusal and its reason) and the
-  closed trades.
+  hurdle and the resulting edge. The view line also names which source is leading
+  the view and the sign of each bar of the projected path.
+- Two tables: the decision log (including every refusal and its reason, and every
+  order still working) and the closed trades.
 
 ---
 
@@ -261,11 +316,13 @@ Dashboard section **02**, above the charts.
 | `opening_balance` | `25000.0` | risk capital per leg |
 | `reserve` | `200000.0` | the shared pool |
 | `lot_size` | `65` | units per lot, all three legs |
-| `decision_seconds` | `30.0` | entry cadence; risk is checked every refresh |
+| `decision_seconds` | `10.0` | entry cadence; risk is checked every tick |
+| `entry_timeout_seconds` | `30.0` | how long an unfilled order stays working |
 | `horizon_bars` | `3` | forward horizon the projection is read over |
 | `entry_view` | `0.15` | minimum blended view |
 | `min_edge_bps` | `0.0` | expected move must beat the round trip by this much |
-| `min_confirmations` | `1` | sources that must lean the way the trade does |
+| `min_confirmations` | `2` | sources that must lean the way the trade does |
+| `require_projection` | `true` | the projected path must lead the view and agree bar by bar |
 | `min_equity_fraction` | `0.5` | drawdown at which a leg borrows |
 | `stop_atr` / `target_atr` | `1.5` / `2.5` | stops and targets in leg-own ATRs |
 | `fallback_stop_bps` | `10.0` | used until the ATR warms up |
@@ -310,15 +367,23 @@ platform, and the platform is not connected to any broker's order routing.
 
 ## Tests
 
-`tests/test_money_simulator.py` — 30 tests, aimed at the failures that produce a
+`tests/test_money_simulator.py` — 42 tests, aimed at the failures that produce a
 plausible number rather than an error:
 
 - a point on the index staying worth exactly ₹65, and the wallet never holding the notional
 - a stop filling at its level, not at the next print
+- a stop being tested on **every print**, and a tick never opening a position
+- an entry filling on the next printed price, and an order with nothing to fill
+  against being pulled
+- the decision clock being 10 seconds and nine not being a decision moment
+- a favourable tick alone not opening a position, and the projection having to lead
+- a projected path that bends back being refused, naming the bars that disagree
+- a put's path being read in the put's own direction
+- a weighted-out source no longer counting as confirmation
 - the exit leg costing more than the entry leg, because STT falls on the sell
 - a put reading as unanimous agreement rather than dissent
 - a premium's own projection being ignored in favour of the underlying's
 - an option hurdle that includes the decay paid while held
-- the reserve topping a wallet up, being repaid before profits belong to the leg,
-  and running out rather than going negative
+- the reserve topping a wallet up at the fill, being repaid before profits belong
+  to the leg, and running out rather than going negative
 - live and simulated books staying separate in one ledger file

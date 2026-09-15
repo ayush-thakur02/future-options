@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -56,11 +57,16 @@ class SimulatorConfig:
     opening_balance: float = 25_000.0
     reserve: float = 200_000.0
     lot_size: int = 65
-    decision_seconds: float = 30.0
+    # How often entries are considered. Risk runs on every tick, not on this.
+    decision_seconds: float = 10.0
+    # An approved entry waits for a price to print against. If none does within
+    # this long the view that justified it has gone stale and the order is pulled.
+    entry_timeout_seconds: float = 30.0
     horizon_bars: int = 3
     entry_view: float = 0.15
     min_edge_bps: float = 0.0
-    min_confirmations: int = 1
+    min_confirmations: int = 2
+    require_projection: bool = True
     min_equity_fraction: float = DEFAULT_MIN_EQUITY_FRACTION
     stop_atr: float = 1.5
     target_atr: float = 2.5
@@ -79,10 +85,12 @@ class SimulatorConfig:
             "reserve": self.reserve,
             "lot_size": self.lot_size,
             "decision_seconds": self.decision_seconds,
+            "entry_timeout_seconds": self.entry_timeout_seconds,
             "horizon_bars": self.horizon_bars,
             "entry_view": self.entry_view,
             "min_edge_bps": self.min_edge_bps,
             "min_confirmations": self.min_confirmations,
+            "require_projection": self.require_projection,
             "min_equity_fraction": self.min_equity_fraction,
             "stop_atr": self.stop_atr,
             "target_atr": self.target_atr,
@@ -92,6 +100,27 @@ class SimulatorConfig:
             "option_cost_rate": self.option_cost_rate,
             "weights": self.weights.as_row(),
         }
+
+
+@dataclass(slots=True)
+class _Intent:
+    """An entry the policy has approved and the tape has not yet priced.
+
+    Held rather than filled on the spot, because the price a decision was made on
+    is not a price anything can be executed at — the platform's own backtester
+    enters on the next bar's open for the same reason. It also gives the order a
+    moment in which the tape can invalidate it.
+    """
+
+    leg: str
+    kind: str
+    instrument: str
+    action: str
+    view: float
+    edge_bps: float
+    reason: str
+    atr: float
+    created_at: datetime
 
 
 class MoneySimulator:
@@ -114,6 +143,7 @@ class MoneySimulator:
         self.wallets: dict[str, Wallet] = {}
         self.reserve = Reserve(opening=self.config.reserve)
         self.positions: dict[str, Position] = {}
+        self._intents: dict[str, _Intent] = {}
         self.views: dict[str, LegView] = {}
         self.decisions: deque[Decision] = deque(maxlen=90)
         self.closed: deque[ClosedTrade] = deque(maxlen=120)
@@ -131,6 +161,7 @@ class MoneySimulator:
             option_cost_rate=self.config.option_cost_rate,
             projection_scale_bps=self.config.projection_scale_bps,
             units=self.config.lot_size,
+            require_projection=self.config.require_projection,
         )
         self._restore()
 
@@ -151,6 +182,7 @@ class MoneySimulator:
             self.wallets = {}
             self.reserve = Reserve(opening=self.config.reserve)
             self.positions.clear()
+            self._intents.clear()
             self.views.clear()
             self.decisions.clear()
             self.closed.clear()
@@ -169,11 +201,11 @@ class MoneySimulator:
     # ------------------------------------------------------------------ clock
 
     def step(self, legs, now: datetime, *, session_open: bool = True) -> list[Decision]:
-        """Mark every leg, close what must close, and enter what may be entered.
+        """Fill what is waiting, close what must close, and judge what may enter.
 
-        Called on the refresh clock. Exits run every call; entries run only when
-        the decision clock is due, so a stop cannot be missed between judgements
-        and a judgement cannot be re-made before anything has changed.
+        Called on the refresh clock. Exits run every call; entries are *decided*
+        on the decision clock and *filled* on the next price that prints, which is
+        what :meth:`mark` is for.
 
         ``legs`` accepts either :class:`~.policy.LegState` records or the plain
         mappings the board produces, so the runtime never has to import this
@@ -181,18 +213,20 @@ class MoneySimulator:
         """
         with self._lock:
             states = [as_leg_state(item) for item in legs]
+            prices = {state.label: float(state.price or 0.0) for state in states}
             if self.started_at is None:
                 self.started_at = now
             self.steps += 1
             self.updated_at = now
 
-            produced: list[Decision] = []
             if not session_open:
-                produced.extend(self._flatten(states, now, "session closed"))
-                self._mark(states, now)
+                self._intents.clear()
+                produced = self._flatten(prices, now, "session closed")
+                self._mark(prices)
                 return produced
 
-            produced.extend(self._manage(states, now))
+            produced = self._fill_intents(prices, now)
+            produced.extend(self._manage(prices, now))
             due = (
                 self.last_decision_at is None
                 or (now - self.last_decision_at).total_seconds() >= self.config.decision_seconds
@@ -200,22 +234,124 @@ class MoneySimulator:
             if due:
                 self.last_decision_at = now
                 produced.extend(self._decide(states, now))
-            self._mark(states, now)
+            self._mark(prices)
             return produced
+
+    def mark(self, prices: Mapping[str, float], now: datetime) -> list[Decision]:
+        """React to one print, without re-judging anything.
+
+        This is the tick path. A stop is a price level, and a level tested once a
+        second is a level the tape gets to cross and come back from in between —
+        so risk is checked on every print the feed delivers, while the decision to
+        open a position stays on its own slower clock.
+        """
+        with self._lock:
+            if not prices:
+                return []
+            self.updated_at = now
+            produced = self._fill_intents(prices, now)
+            produced.extend(self._manage(prices, now))
+            self._mark(prices)
+            return produced
+
+    # ---------------------------------------------------------------- entries
+
+    def _fill_intents(self, prices: Mapping[str, float], now: datetime) -> list[Decision]:
+        """Execute approved entries at a price that has actually printed."""
+        produced: list[Decision] = []
+        for leg, intent in list(self._intents.items()):
+            if now <= intent.created_at:
+                continue
+            if leg in self.positions:
+                del self._intents[leg]
+                continue
+            price = float(prices.get(leg, 0.0) or 0.0)
+            expired = (now - intent.created_at).total_seconds() > self.config.entry_timeout_seconds
+            if expired:
+                # Checked before the price, so an order is pulled on its own clock
+                # rather than waiting for a tape that may have gone dark.
+                del self._intents[leg]
+                produced.append(
+                    self._record_intent(
+                        intent,
+                        price,
+                        now,
+                        f"order pulled — nothing filled it in "
+                        f"{self.config.entry_timeout_seconds:.0f}s",
+                    )
+                )
+                continue
+            if price <= 0:
+                continue
+            del self._intents[leg]
+            produced.append(self._open(intent, price, now))
+        return produced
+
+    def _open(self, intent: _Intent, price: float, now: datetime) -> Decision:
+        """Fund one lot and put it on, at the price the tape gave."""
+        self._ensure_capital(intent.leg)
+        wallet = self._wallet(intent.leg)
+        units = self.config.lot_size
+        direction = Direction.UP if intent.action == BUY else Direction.DOWN
+
+        entry_cost = self._cost(
+            intent.kind, price, units, "buy" if direction is Direction.UP else "sell"
+        )
+        if wallet.cash - entry_cost <= 0:
+            return self._record_intent(
+                intent, price, now, "wallet exhausted and the reserve is spent"
+            )
+        wallet.charge(entry_cost)
+
+        stop, target = levels_for(
+            direction,
+            price,
+            intent.atr,
+            self.config.stop_atr,
+            self.config.target_atr,
+            fallback_bps=self.config.fallback_stop_bps,
+        )
+        position = Position(
+            leg=intent.leg,
+            kind=intent.kind,
+            instrument=intent.instrument,
+            direction=direction,
+            units=units,
+            entry_price=price,
+            entry_ts=now,
+            entry_cost=entry_cost,
+            view=intent.view,
+            edge_bps=intent.edge_bps,
+            reason=intent.reason,
+            stop_price=stop,
+            target_price=target,
+            expires_at=expiry_of(now, self.config.max_hold_minutes),
+        )
+        self.positions[intent.leg] = position
+        self._persist()
+        decision = Decision(
+            leg=intent.leg,
+            action=intent.action,
+            reason=intent.reason,
+            view=intent.view,
+            price=price,
+            at=now,
+            edge_bps=intent.edge_bps,
+            units=units,
+        )
+        self.decisions.append(decision)
+        return decision
 
     # ----------------------------------------------------------------- exits
 
-    def _manage(self, legs: list[LegState], now: datetime) -> list[Decision]:
-        """Close anything the tape has resolved. Runs on every refresh."""
+    def _manage(self, prices: Mapping[str, float], now: datetime) -> list[Decision]:
+        """Close anything the tape has resolved. Runs on every print."""
         produced: list[Decision] = []
-        for state in legs:
-            position = self.positions.get(state.label)
-            if position is None:
-                continue
-            price = float(state.price or 0.0)
+        for label, position in list(self.positions.items()):
+            price = float(prices.get(label, 0.0) or 0.0)
             if price <= 0:
                 continue
-            view = self.views.get(state.label)
+            view = self.views.get(label)
             blended = view.view if view is not None else 0.0
             reason = position.exit_reason(price, blended, now, flip=self.config.reversal_view)
             # A reversal is the one exit that is a judgement rather than a price
@@ -224,11 +360,11 @@ class MoneySimulator:
             if reason == "reversal" and not self._held_long_enough(position, now):
                 reason = ""
             if reason:
-                produced.append(self._close(state, position, price, now, reason))
+                produced.append(self._close(position, price, now, reason))
                 continue
-            wallet = self._wallet(state.label)
+            wallet = self._wallet(label)
             if wallet.equity(position.unrealized(price)) <= 0.0:
-                produced.append(self._close(state, position, price, now, "ruin"))
+                produced.append(self._close(position, price, now, "ruin"))
         return produced
 
     def _held_long_enough(self, position: Position, now: datetime) -> bool:
@@ -236,7 +372,6 @@ class MoneySimulator:
 
     def _close(
         self,
-        state: LegState,
         position: Position,
         price: float,
         now: datetime,
@@ -252,7 +387,12 @@ class MoneySimulator:
         """
         fill = self._fill_price(position, price, reason)
         gross = position.unrealized(fill)
-        exit_cost = self._exit_cost(state, fill, position.units, position.is_long)
+        exit_cost = self._cost(
+            position.kind,
+            fill,
+            position.units,
+            "sell" if position.is_long else "buy",
+        )
         total_costs = position.entry_cost + exit_cost
         # The entry cost already left the wallet when the lot was opened, so the
         # cash that arrives at the exit is the gross less the exit leg only. What
@@ -309,14 +449,14 @@ class MoneySimulator:
             return float(position.target_price)
         return float(price)
 
-    def _flatten(self, legs: list[LegState], now: datetime, reason: str) -> list[Decision]:
+    def _flatten(self, prices: Mapping[str, float], now: datetime, reason: str) -> list[Decision]:
         """Close everything — the session is over, and nothing is carried overnight."""
         produced: list[Decision] = []
-        for state in legs:
-            position = self.positions.get(state.label)
-            if position is None or float(state.price or 0.0) <= 0:
+        for label in list(self.positions):
+            price = float(prices.get(label, 0.0) or 0.0)
+            if price <= 0:
                 continue
-            produced.append(self._close(state, position, float(state.price), now, reason))
+            produced.append(self._close(self.positions[label], price, now, reason))
         return produced
 
     # --------------------------------------------------------------- entries
@@ -327,8 +467,7 @@ class MoneySimulator:
             view = self.policy.view_for(state, self.cost_model)
             self.views[state.label] = view
 
-            position = self.positions.get(state.label)
-            if position is not None:
+            if state.label in self.positions or state.label in self._intents:
                 continue
 
             action, reason = self.policy.action_for(view, has_position=False)
@@ -344,8 +483,38 @@ class MoneySimulator:
             if float(state.price or 0.0) <= 0:
                 continue
 
-            produced.append(self._open(state, view, action, reason, now))
+            # Approved, not filled. The order waits for a price the tape actually
+            # prints — the one this judgement was made on is gone by now.
+            self._intents[state.label] = _Intent(
+                leg=state.label,
+                kind=state.kind,
+                instrument=state.instrument,
+                action=action,
+                view=view.view,
+                edge_bps=view.edge_bps,
+                reason=reason,
+                atr=self._atr_of(state),
+                created_at=now,
+            )
+            produced.append(
+                self._record(state, action, f"{reason} · order working", view, now)
+            )
         return produced
+
+    def _record_intent(
+        self, intent: _Intent, price: float, now: datetime, reason: str
+    ) -> Decision:
+        decision = Decision(
+            leg=intent.leg,
+            action=HOLD,
+            reason=reason,
+            view=intent.view,
+            price=price,
+            at=now,
+            edge_bps=intent.edge_bps,
+        )
+        self.decisions.append(decision)
+        return decision
 
     def _blocked(self, state: LegState, now: datetime) -> str:
         """Entry refusals that have nothing to do with the view."""
@@ -354,58 +523,6 @@ class MoneySimulator:
             remaining = self.config.cooldown_seconds - (now - since).total_seconds()
             return f"cooling down {remaining:.0f}s after the last close"
         return ""
-
-    def _open(self, state: LegState, view: LegView, action: str, reason: str, now: datetime) -> Decision:
-        """Fund one lot and put it on."""
-        self._ensure_capital(state.label)
-        wallet = self._wallet(state.label)
-        price = float(state.price)
-        units = self.config.lot_size
-        direction = Direction.UP if action == BUY else Direction.DOWN
-
-        entry_cost = self._entry_cost(state, price, units, is_long=direction is Direction.UP)
-        if wallet.cash - entry_cost <= 0:
-            return self._record(state, HOLD, "wallet exhausted and the reserve is spent", view, now)
-        wallet.charge(entry_cost)
-
-        stop, target = levels_for(
-            direction,
-            price,
-            self._atr_of(state),
-            self.config.stop_atr,
-            self.config.target_atr,
-            fallback_bps=self.config.fallback_stop_bps,
-        )
-        position = Position(
-            leg=state.label,
-            kind=state.kind,
-            instrument=state.instrument,
-            direction=direction,
-            units=units,
-            entry_price=price,
-            entry_ts=now,
-            entry_cost=entry_cost,
-            view=view.view,
-            edge_bps=view.edge_bps,
-            reason=reason,
-            stop_price=stop,
-            target_price=target,
-            expires_at=expiry_of(now, self.config.max_hold_minutes),
-        )
-        self.positions[state.label] = position
-        self._persist()
-        decision = Decision(
-            leg=state.label,
-            action=action,
-            reason=reason,
-            view=view.view,
-            price=price,
-            at=now,
-            edge_bps=view.edge_bps,
-            units=units,
-        )
-        self.decisions.append(decision)
-        return decision
 
     def _record(
         self, state: LegState, action: str, reason: str, view: LegView, now: datetime
@@ -466,15 +583,7 @@ class MoneySimulator:
 
     # --------------------------------------------------------------- costing
 
-    def _entry_cost(self, state: LegState, price: float, units: int, *, is_long: bool) -> float:
-        side = "buy" if is_long else "sell"
-        return self._cost(state, price, units, side)
-
-    def _exit_cost(self, state: LegState, price: float, units: int, is_long: bool) -> float:
-        side = "sell" if is_long else "buy"
-        return self._cost(state, price, units, side)
-
-    def _cost(self, state: LegState, price: float, units: int, side: str) -> float:
+    def _cost(self, kind: str, price: float, units: int, side: str) -> float:
         """One side of a round trip, in rupees.
 
         Options are charged as a fraction of the premium, which is where an
@@ -487,7 +596,7 @@ class MoneySimulator:
         notional = max(float(price) * int(units), 0.0)
         if notional <= 0:
             return 0.0
-        if state.is_option:
+        if kind in {"CE", "PE"}:
             return notional * self.config.option_cost_rate / 2.0
         if self.cost_model is None:
             return 0.0
@@ -501,11 +610,11 @@ class MoneySimulator:
 
     # ------------------------------------------------------------- bookkeeping
 
-    def _mark(self, legs: list[LegState], now: datetime) -> None:
-        for state in legs:
-            position = self.positions.get(state.label)
-            unrealized = position.unrealized(float(state.price or 0.0)) if position else 0.0
-            self._wallet(state.label).observe(unrealized)
+    def _mark(self, prices: Mapping[str, float]) -> None:
+        for leg, price in prices.items():
+            position = self.positions.get(leg)
+            unrealized = position.unrealized(float(price or 0.0)) if position else 0.0
+            self._wallet(leg).observe(unrealized)
 
     def _persist(self) -> None:
         if self.ledger is None:

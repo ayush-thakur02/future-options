@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from core.scoring import trust_weight
 from core.types import Direction
 
 BUY = "BUY"
@@ -37,6 +38,8 @@ SELL = "SELL"
 HOLD = "HOLD"
 EXIT = "EXIT"
 
+# The source the entry gates treat as the forward view.
+PROJECTION_SOURCE = "projection"
 # Below this a source is noise rather than an opinion, and counting it as
 # agreement would let two nearly-flat inputs outvote one strong one.
 SOFT_FLOOR = 0.05
@@ -150,6 +153,10 @@ class LegView:
     horizon_minutes: int = 0
     price: float = 0.0
     units: int = 1
+    # The sign of the projected move at each bar of the horizon, in the leg's own
+    # price. A path that bends back is not a path to hold, and the per-bar view is
+    # the only place a learner's disagreement with its own longer horizon shows up.
+    horizon_directions: tuple[int, ...] = ()
 
     @property
     def side(self) -> Direction:
@@ -168,6 +175,19 @@ class LegView:
         return self.edge_bps / 10_000.0 * self.notional
 
     @property
+    def leading_source(self) -> str:
+        """The source carrying the most weight in this view."""
+        if not self.contributions:
+            return ""
+        best = max(self.contributions, key=lambda item: abs(item.weighted))
+        return best.source if abs(best.weighted) > 0.0 else ""
+
+    @property
+    def projection_leads(self) -> bool:
+        """Whether the projected path, not something else, is what the view rests on."""
+        return self.leading_source == PROJECTION_SOURCE
+
+    @property
     def agreement(self) -> tuple[int, int]:
         """Sources leaning with the view, and sources with any opinion at all.
 
@@ -176,8 +196,15 @@ class LegView:
         leg — and for a put those have opposite signs by construction, so testing
         contributions against the leg's view would report a put that every source
         agrees on as agreeing with none of them.
+
+        A source weighted out of the blend does not get to confirm anything, which
+        is what lets momentum be switched off without it still counting as a vote.
         """
-        leaning = [item for item in self.contributions if abs(item.value) >= SOFT_FLOOR]
+        leaning = [
+            item
+            for item in self.contributions
+            if item.weight > 0 and abs(item.value) >= SOFT_FLOOR
+        ]
         agree = sum(1 for item in leaning if item.value * self.index_view > 0)
         return agree, len(leaning)
 
@@ -192,6 +219,9 @@ class LegView:
             "edge_bps": round(self.edge_bps, 3),
             "edge_rupees": round(self.edge_rupees, 2),
             "agreement": f"{agree}/{total}" if total else "0/0",
+            "leading_source": self.leading_source,
+            "projection_leads": self.projection_leads,
+            "horizon_directions": list(self.horizon_directions),
             "sources": [
                 {
                     "source": item.source,
@@ -238,10 +268,20 @@ class PolicyWeights:
     """How much each source counts. Renormalised over the sources present."""
 
     strategy: float = 1.0
-    ai: float = 0.9
-    model: float = 0.6
-    projection: float = 1.2
-    momentum: float = 0.4
+    ai: float = 0.8
+    model: float = 0.5
+    projection: float = 1.5
+    # Zero on purpose, and it is the whole of "a tick is not a thesis". Momentum
+    # is the last few seconds of tape, so any weight at all lets one favourable
+    # print carry a view over the entry threshold — which is a position opened on
+    # the tick that just happened rather than on where the next few minutes are
+    # projected to go. Raise it to study tick-reactive entries; leave it at zero
+    # to trade the forward path.
+    momentum: float = 0.0
+
+    def __post_init__(self) -> None:
+        if min(self.strategy, self.ai, self.model, self.projection, self.momentum) < 0:
+            raise ValueError("policy weights cannot be negative")
 
     def as_row(self) -> dict:
         return {
@@ -268,6 +308,7 @@ class DecisionPolicy:
         projection_scale_bps: float = 4.0,
         units: int = 65,
         index_cost_bps: float = 0.0,
+        require_projection: bool = True,
     ) -> None:
         self.weights = weights or PolicyWeights()
         self.horizon_bars = max(int(horizon_bars), 1)
@@ -280,6 +321,7 @@ class DecisionPolicy:
         self.projection_scale_bps = max(float(projection_scale_bps), 1e-6)
         self.units = max(int(units), 1)
         self.index_cost_bps = max(float(index_cost_bps), 0.0)
+        self.require_projection = bool(require_projection)
 
     # -------------------------------------------------------------- the view
 
@@ -297,12 +339,18 @@ class DecisionPolicy:
         contributions.append(Contribution("model", model.value, self.weights.model, model.detail))
 
         projection_bps = self.projected_index_move_bps(state)
+        # A leg with no projected path has no forward view to contribute, so it is
+        # weighted out rather than entered as a confident zero — which would
+        # dilute the sources that do have something to say.
+        has_path = bool(state.index_projections or state.projections)
         contributions.append(
             Contribution(
-                "projection",
+                PROJECTION_SOURCE,
                 squash(projection_bps, self.projection_scale_bps),
-                self.weights.projection,
-                f"{projection_bps:+.2f}bp over {self.horizon_bars} bars",
+                self.weights.projection if has_path else 0.0,
+                f"{projection_bps:+.2f}bp over {self.horizon_bars} bars"
+                if has_path
+                else "no projected path",
             )
         )
 
@@ -325,7 +373,38 @@ class DecisionPolicy:
             horizon_minutes=self.horizon_bars,
             price=float(state.price),
             units=self.units,
+            horizon_directions=self.horizon_directions(state),
         )
+
+    def horizon_directions(self, state: LegState) -> tuple[int, ...]:
+        """The sign of the projected move at each bar, **in the leg's own price**.
+
+        Read bar by bar rather than at the end of the path, because a path that
+        bends back is not a path to hold: the first two minutes pointing up and
+        the third pointing down is a trade whose own forecast says it should be
+        closed before its target. It is also where a learner's disagreement with
+        its own longer horizon shows up, since the projected path blends the
+        online regression's per-horizon moves over the rule-based drift.
+
+        The path is the underlying's, so it is flipped for a put by the same sign
+        that flips the view — otherwise a put whose forecast is exactly right
+        would read as a forecast pointing the other way.
+        """
+        path = list(state.index_projections or state.projections)
+        if not path:
+            return ()
+        anchor = float(getattr(path[0], "open", 0.0) or 0.0)
+        if anchor <= 0:
+            return ()
+        beta = float(state.index_beta or 1.0)
+        directions: list[int] = []
+        for candle in path[: self.horizon_bars]:
+            close = float(getattr(candle, "close", 0.0) or 0.0)
+            if close <= 0:
+                directions.append(0)
+                continue
+            directions.append(Direction.from_value((close - anchor) * beta).sign)
+        return tuple(directions)
 
     def projected_index_move_bps(self, state: LegState) -> float:
         """The projected move of the underlying over the horizon, in basis points.
@@ -401,6 +480,12 @@ class DecisionPolicy:
         The gates are ordered so the most specific explanation wins: a reader
         asking "why is it not trading" should get the actual binding constraint
         rather than the first check that happened to fail.
+
+        Two of them exist to answer one complaint: that a position opened on the
+        tick that had just gone the right way. The projected path has to lead the
+        view, and every bar of that path has to point where the trade does. A
+        favourable print can still move the blend — the projection is anchored on
+        the live price — but it cannot by itself be the reason for the entry.
         """
         if has_position:
             return HOLD, "holding"
@@ -411,6 +496,18 @@ class DecisionPolicy:
         side = view.side
         if side is Direction.FLAT:
             return HOLD, "no directional view"
+
+        if not view.horizon_directions:
+            return HOLD, "no projected path to trade against"
+
+        disagreeing = [index for index, sign in enumerate(view.horizon_directions, 1) if sign != side.sign]
+        if disagreeing:
+            horizon = ", ".join(f"+{index}m" for index in disagreeing)
+            return HOLD, f"projected path disagrees at {horizon}"
+
+        if self.require_projection and not view.projection_leads:
+            leader = view.leading_source or "nothing"
+            return HOLD, f"the projection does not lead this view — {leader} does"
 
         agree, total = view.agreement
         if agree < self.min_confirmations:
@@ -427,8 +524,9 @@ class DecisionPolicy:
 
         action = BUY if side is Direction.UP else SELL
         return action, (
-            f"{side.value} view {view.view:+.2f}, edge {view.edge_bps:+.1f}bp "
-            f"({agree}/{total} sources agree)"
+            f"{side.value} view {view.view:+.2f} on a projected "
+            f"{'+'.join(str(sign) for sign in view.horizon_directions)} path, "
+            f"edge {view.edge_bps:+.1f}bp ({agree}/{total} sources agree)"
         )
 
 
@@ -454,9 +552,10 @@ def _clamp(value: float) -> float:
 def _strategy_view(signals) -> tuple[float, str]:
     """The ensemble's signed score, weighted by each rule's measured trust.
 
-    Mirrors the engine's own blend: a rule's prior is raised by at most half
-    again by its trust score, so an unproven rule still contributes rather than
-    being silenced on a fresh install.
+    Trust is signed and may be negative, so a rule that has been reliably wrong
+    is weighted *down* rather than merely being switched off. Weighting it
+    negatively would invert its signal, which is a much larger claim than the
+    evidence supports — a rule can be wrong for a regime and right in the next.
     """
     total = weight_sum = 0.0
     used = active = 0
@@ -465,12 +564,11 @@ def _strategy_view(signals) -> tuple[float, str]:
         if meta.get("state") in {"N/A", "ERROR"}:
             continue
         score = _clamp(getattr(signal, "score", 0.0))
-        trust = meta.get("trust_score", 0.0)
         try:
-            trust = max(0.0, min(1.0, float(trust)))
+            trust = max(-1.0, min(1.0, float(meta.get("trust_score", 0.0))))
         except (TypeError, ValueError):
             trust = 0.0
-        weight = 0.75 + 0.5 * trust
+        weight = trust_weight(trust)
         total += score * weight
         weight_sum += weight
         used += 1
@@ -533,6 +631,7 @@ __all__ = [
     "BUY",
     "EXIT",
     "HOLD",
+    "PROJECTION_SOURCE",
     "SELL",
     "Contribution",
     "Decision",
