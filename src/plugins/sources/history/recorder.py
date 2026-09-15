@@ -30,6 +30,16 @@ from core.types import Tick
 
 from .partitions import CHAIN, HOUR, TICKS, PartitionedStore, normalize_frames
 
+# The journal's durability barrier. ``os.fdatasync`` is the cheaper call where it
+# exists — it leaves metadata a crash could not lose alone — but it is Linux-only,
+# and a live session also runs on macOS, where ``os.fsync`` is what the platform
+# offers. Without the fallback every flush raised AttributeError and the tape was
+# never checkpointed.
+try:
+    from os import fdatasync as _sync_journal
+except ImportError:
+    from os import fsync as _sync_journal
+
 # Rows held in memory before a flush. A minute of a busy index feed is a few
 # thousand ticks, so this bounds the exposure to a few seconds of data.
 DEFAULT_BUFFER = 4_000
@@ -115,12 +125,12 @@ class TickRecorder:
             view = view[os.write(self._journal_fd, view) :]
         self._journal_writes += 1
         if self._journal_writes >= self.journal_sync_every:
-            os.fdatasync(self._journal_fd)
+            _sync_journal(self._journal_fd)
             self._journal_writes = 0
 
     def _clear_journal(self) -> None:
         if self._journal_fd is not None:
-            os.fdatasync(self._journal_fd)
+            _sync_journal(self._journal_fd)
             os.close(self._journal_fd)
             self._journal_fd = None
         tick_journal_path(self.store).unlink(missing_ok=True)
@@ -137,7 +147,7 @@ class TickRecorder:
             self.flush()
         finally:
             if self._journal_fd is not None:
-                os.fdatasync(self._journal_fd)
+                _sync_journal(self._journal_fd)
                 os.close(self._journal_fd)
                 self._journal_fd = None
             if self._lock_fd is not None:
