@@ -28,6 +28,7 @@ from .bars import BarLoader
 from .board import MarketBoard
 from .engine import Engine
 from .nowcast import NowcastLoop
+from .warmup import WarmUp, WarmUpReport, warm_up_checkpoint
 
 DEFAULT_DAYS = 15
 DEFAULT_TICKS_PER_BAR = 12
@@ -56,6 +57,14 @@ class SessionConfig:
     # re-fetched.
     record: bool = True
     research: bool = True
+    # Replay recent bars into the research ledgers before the session starts, so
+    # the strategies and the online learners are not beginning the day with no
+    # evidence behind them.
+    warmup: bool = True
+    # Bars a cold instrument is replayed over. Capped at the engine's own strategy
+    # window, because that is all a rule is ever evaluated on live.
+    warmup_bars: int = 600
+    warmup_projections: bool = True
     # Browser bind overrides. None keeps the value configured for the renderer.
     web_host: str | None = None
     web_port: int | None = None
@@ -75,6 +84,7 @@ class Session:
     tick_recorder: object | None = field(init=False, default=None)
     chain_recorder: object | None = field(init=False, default=None)
     renderer: object | None = field(init=False, default=None)
+    warmup: WarmUpReport | None = field(init=False, default=None)
     live: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
@@ -182,11 +192,40 @@ class Session:
         self._start_recording()
         if self.config.research:
             engines = [leg.engine for leg in self.board.legs] if self.board else [self.engine]
+            labels = [leg.label for leg in self.board.legs] if self.board else ["INDEX"]
             for engine in engines:
                 engine.enable_research()
+            if self.config.warmup:
+                self.warmup = self._run_warmup(list(zip(labels, engines, strict=True)), report)
         self.feed_status = "authenticated · awaiting ticks" if self.live else "SIMULATION"
         report(f"ready in {time.perf_counter() - started:.1f}s")
         return self
+
+    def _run_warmup(self, targets, report: Callable[[str], None]) -> WarmUpReport:
+        """Replay recent bars so the first live decision is not the first evidence."""
+        service = WarmUp(
+            checkpoint=warm_up_checkpoint(self.kernel.settings),
+            logger=self.logger,
+        )
+        report(
+            f"warming research (up to {self.config.warmup_bars:,} bars per instrument)"
+        )
+        outcome = service.run(
+            targets,
+            mode="live" if self.live else "simulation",
+            bars=self.config.warmup_bars,
+            projections=self.config.warmup_projections,
+            progress=report,
+        )
+        report(f"  {outcome.headline()}")
+        # The replay drove every forecaster through the past. Put them all back on
+        # the live bar before anything is drawn from one.
+        if self.board is not None:
+            self.board.refresh_projection()
+            self.board.warmup = outcome.as_row()
+        else:
+            self.engine.refresh_projection()
+        return outcome
 
     def _start_recording(self) -> None:
         """Begin writing the tape and the chain, if this is a live run."""

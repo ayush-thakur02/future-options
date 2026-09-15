@@ -54,6 +54,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Update instrument models as candles close",
     )
     parser.add_argument(
+        "--warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replay recent bars into the research ledgers before the session starts",
+    )
+    parser.add_argument(
+        "--warmup-bars",
+        type=int,
+        default=600,
+        help="Bars a cold-start warm-up replays per instrument (later runs resume instead)",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -88,6 +100,8 @@ def session_config(args: argparse.Namespace) -> SessionConfig:
         nowcast_interval=min(float(args.nowcast), 1.0),
         speed=args.speed,
         legs=args.legs,
+        warmup=args.warmup,
+        warmup_bars=args.warmup_bars,
         web_host=args.host.strip() if args.host else None,
         web_port=args.port,
         open_browser=args.open_browser,
@@ -99,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.timeframe < 1 or args.bars_ahead < 1 or args.refresh <= 0 or args.nowcast <= 0 or args.speed <= 0:
         parser.error("timeframe, bars-ahead, refresh, nowcast and speed must be positive")
+    if args.warmup_bars < 1:
+        parser.error("--warmup-bars must be at least 1")
     if args.host is not None and not args.host.strip():
         parser.error("--host cannot be empty")
     if args.port is not None and not 1 <= args.port <= 65535:

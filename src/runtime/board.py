@@ -102,6 +102,9 @@ class MarketBoard:
         self.index_bars: pd.DataFrame = pd.DataFrame()
         self.expiry = None
         self.ticks = 0
+        # The pre-open replay's report, put here by the session once it has run.
+        # The board draws it; it does not produce it.
+        self.warmup: dict = {}
         # Called at the end of every refresh, so a session can sample the chain on
         # the same clock the projections run on rather than inventing a second one.
         self.on_refresh: Callable[[], None] | None = None
@@ -391,6 +394,7 @@ class MarketBoard:
             ],
             chain=self._chain_summary(),
             simulation=self.simulator.snapshot() if self.simulator is not None else {},
+            warmup=dict(self.warmup),
         )
         if self.advisor is not None:
             board = self.advisor.advise(board, bar_minutes=self.bar_minutes)

@@ -907,6 +907,7 @@ function renderSystem(payload) {
   const legs = legList(payload);
   const spot = spotLeg(payload)?.market || {};
   const research = spot.research || {};
+  const warmup = payload.warmup || {};
   const projectionPending = legs.reduce((total, leg) => total + Number(leg.market?.research?.pending || 0), 0);
   const missing = legs.reduce((total, leg) => total + Number(leg.market?.research?.missing || 0), 0);
   const aiPending = legs.reduce((total, leg) => total + Number(leg.market?.research?.ai?.pending || 0), 0);
@@ -921,6 +922,32 @@ function renderSystem(payload) {
     systemItem("spread", `${fmt(research.spread, 3)} per unit`),
     systemItem("cost assumptions", `₹${fmt(research.fixed_cost_rupees, 0)}/lot + ${fmt(research.variable_cost_bps, 1)}bp`),
   ];
+  // The warm-up is why the strategy and AI panels already have a record on the
+  // first frame of the day. Without it on screen, a trust score that is not zero
+  // before the market opens looks like it came from nowhere.
+  items.push(
+    systemItem(
+      "warm-up",
+      warmup.headline ? String(warmup.headline).toUpperCase() : "NOT WARMED",
+      warmup.ran ? (warmup.cold ? "prediction" : "up") : "muted",
+    ),
+    systemItem(
+      "warm-up origin",
+      warmup.ran ? (warmup.cold ? "COLD START — FULL REPLAY" : "RESUMED FROM CHECKPOINT") : "—",
+      warmup.ran && !warmup.cold ? "up" : "",
+    ),
+    systemItem(
+      "bars replayed",
+      warmup.ran ? `${Number(warmup.bars || 0).toLocaleString("en-IN")} · ${fmt(warmup.seconds, 1)}s` : "—",
+    ),
+    systemItem(
+      "per instrument",
+      (warmup.instruments || [])
+        .map((item) => `${item.label} ${item.skipped ? "—" : Number(item.bars || 0).toLocaleString("en-IN")}`)
+        .join(" · ") || "—",
+      "cyan",
+    ),
+  );
   byId("system-state").replaceChildren(...items);
 }
 

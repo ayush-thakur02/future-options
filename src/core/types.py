@@ -281,6 +281,9 @@ class BoardSnapshot:
     # A dict rather than a typed record because the board draws it and nothing
     # else consumes it — the same reason ``chain`` is one.
     simulation: dict = field(default_factory=dict)
+    # What the pre-open replay managed, so the dashboard can say why the
+    # strategies already have a record rather than showing them start at nothing.
+    warmup: dict = field(default_factory=dict)
 
     def leg(self, label: str) -> LegSnapshot | None:
         for item in self.legs:
