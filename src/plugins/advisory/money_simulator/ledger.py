@@ -158,6 +158,12 @@ class SimulationLedger:
     def restore(self, opening: float) -> RestoredState:
         """Reload the last run's balances, if there was one."""
         state = RestoredState()
+        if not self.path.exists():
+            # Reading a ledger that is not there must not create one. Opening the
+            # connection would build the schema, and simply constructing the
+            # simulator — which every board does, including in tests — would leave
+            # an empty book behind in the data directory.
+            return state
         try:
             with self._lock, self._connect() as database:
                 rows = database.execute(

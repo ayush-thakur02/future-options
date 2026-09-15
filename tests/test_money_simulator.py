@@ -462,12 +462,19 @@ def test_the_snapshot_is_json_safe_and_carries_the_policy() -> None:
 
 
 @pytest.fixture(scope="module")
-def board():
+def board(tmp_path_factory):
     from kernel import Kernel
     from plugins.sources.simulated.series import generate_candles
     from runtime.board import MarketBoard
 
-    return MarketBoard(Kernel.bootstrap(Settings()), bar_minutes=1).build(
+    # A temporary data directory, not the project's. The board builds the paper
+    # book from the capability, the book persists after every close, and an
+    # offline dashboard reads the same ``simulation`` ledger — so a test that
+    # traded against the real data directory would write its own fake fills into
+    # the user's paper book.
+    root = tmp_path_factory.mktemp("money-board")
+    settings = Settings(data_dir=root / "data", model_dir=root / "models", log_dir=root / "logs")
+    return MarketBoard(Kernel.bootstrap(settings), bar_minutes=1).build(
         generate_candles(days=3, seed=29)
     )
 
