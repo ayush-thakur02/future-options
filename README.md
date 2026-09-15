@@ -6,6 +6,12 @@ AI classifiers, and projects the **next three complete candles**. Every forecast
 and active strategy signal is frozen at issue time and scored when its exact
 target bar closes.
 
+Underneath it runs a **money simulator**: each of the index, call and put legs gets
+its own wallet and trades one lot of 65 units against the live tape, deciding
+every 30 seconds and keeping score in rupees, backed by a shared reserve that keeps
+a drawn-down leg investing. It is the platform's cost argument settled in cash
+instead of in basis points — see [Money simulator](docs/money-simulator.md).
+
 The live board records first-issued forecasts, then measures wins, misses and
 price error as target candles close. Start it with `uv run niftypulse`, which
 serves the browser terminal at <http://127.0.0.1:5050>; add `--offline --speed 60`
@@ -193,6 +199,7 @@ Full documentation is in [`docs/`](docs/README.md).
 | Add or replace a component | [Plugins](docs/plugins.md) |
 | Know what the blue candles are | [Projection](docs/projection.md) |
 | Understand the call/index/put board | [Options](docs/options.md) |
+| See what the strategies make in rupees | [Money simulator](docs/money-simulator.md) |
 | Know what is on disk | [Storage](docs/storage.md) |
 | Do anything but watch | [Operations](docs/operations.md) |
 | Look up a setting | [Configuration](docs/configuration.md) |
@@ -219,7 +226,7 @@ src/
 │   ├── features/      technical: 147 causal columns
 │   ├── strategies/    8 rule packs · 30 strategies, plus ml_forecast
 │   ├── forecasts/     ml_ensemble · projection · online_research
-│   ├── advisory/      breakeven_gate · performance_ledger
+│   ├── advisory/      breakeven_gate · performance_ledger · money_simulator
 │   └── renderers/     web: the Flask dashboard and its JSON boundary
 ├── runtime/       # session, engine, board, nowcast, conviction, bars
 ├── backtest/      # costs, execution, reporting
@@ -237,7 +244,7 @@ data/                      # partitioned store: candles, ticks, chain
 `plugin.py` into the tree — no registry to edit, no factory to extend. Plugins
 link through declared capabilities rather than imports, so any one can be replaced
 by another that provides the same name. The kernel's plugin index lists what is
-wired to what: **21 bundled plugins, 43 capabilities**. See [Plugins](docs/plugins.md).
+wired to what: **22 bundled plugins, 44 capabilities**. See [Plugins](docs/plugins.md).
 
 ## Tests
 
@@ -271,6 +278,17 @@ Some are worth knowing about:
 - `test_leg_premium_decays_when_the_index_does_not_move` holds spot flat and
   asserts the premium falls across a session, which is the strongest single check
   that the options clock counts trading time rather than wall-clock time.
+- `test_a_point_on_the_index_is_worth_exactly_the_lot` pins the simulator's
+  central identity: 24,000 to 24,020 is ₹1,300 at 65 units, and the wallet never
+  holds the 1.5 million of notional behind it. Get that scaling wrong and every
+  number on the money panel is plausible and wrong by four orders of magnitude.
+- `test_a_stop_fills_at_its_level_not_at_the_next_print` guards the same class of
+  error in the other direction: a stop that fills wherever the next refresh found
+  the tape turns a 20-point stop into a 300-point rout.
+- `test_a_put_agrees_with_the_sources_that_agree_with_it` asserts a put reads as
+  unanimous agreement rather than unanimous dissent. It does not do so by default:
+  a put's premium is anti-correlated with the index, so contributions have to be
+  compared in index space rather than against the leg's own view.
 
 ## Things that trip people up
 

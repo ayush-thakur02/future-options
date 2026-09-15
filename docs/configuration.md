@@ -186,6 +186,15 @@ tree.
 | `forecast:online_research` | `buy_probability`, `sell_probability` | `0.56`, `0.44` | Probability gates for research BUY and SELL classifications |
 | `forecast:online_research` | `min_trust_for_action` | `0.15` | Below this trust, the research classification stays HOLD |
 | `advisory:performance_ledger` | `min_trust_samples` | `50` | Strategy outcomes needed before trust reaches full sample weight |
+| `advisory:money_simulator` | `opening_balance`, `reserve` | `25000.0`, `200000.0` | Risk capital per leg, and the shared pool it borrows from |
+| `advisory:money_simulator` | `lot_size` | `65` | Units per lot, all three legs |
+| `advisory:money_simulator` | `decision_seconds` | `30.0` | Entry cadence; risk is still checked every refresh |
+| `advisory:money_simulator` | `horizon_bars` | `3` | Forward horizon the projection is read over |
+| `advisory:money_simulator` | `entry_view`, `min_edge_bps` | `0.15`, `0.0` | Minimum blended view, and how far the expected move must beat the round trip |
+| `advisory:money_simulator` | `stop_atr`, `target_atr` | `1.5`, `2.5` | Stops and targets in leg-own ATRs |
+| `advisory:money_simulator` | `max_hold_minutes`, `min_hold_seconds`, `cooldown_seconds` | `5.0`, `45.0`, `45.0` | How long a thesis is given, and how fast a leg may re-enter |
+| `advisory:money_simulator` | `option_cost_rate` | `0.012` | Round trip as a fraction of premium |
+| `advisory:money_simulator` | `weights` | five sources | How much each source counts in the blend |
 | `strategy:ml_forecast` | `horizon`, `min_edge` | `1`, `0.04` | Which trained model, and the noise band |
 | `renderer:web` | `host`, `port` | `127.0.0.1`, `5050` | Flask bind address for the dashboard |
 | `renderer:web` | `refresh_ms` | `1000` | Browser snapshot polling interval |

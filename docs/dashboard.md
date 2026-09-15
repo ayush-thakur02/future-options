@@ -28,19 +28,25 @@ second and redraws; `/api/health` reports whether a snapshot has arrived yet.
 |---|---|
 | Overview | Spot, change, regime, feed freshness and today's aggregate AI accuracy across index, call and put |
 | 01 Decision desk | A cost-gated BUY/HOLD/SELL card per instrument, with the current reason, target and invalidation range. Instrument meaning is explicit: a long put is bearish on the index but bullish on put premium |
-| 02 Live instruments | Zoom-sharp SVG candlesticks for index, call and put, with blue projected candles on the same price scale as printed ones |
-| 03 Prediction matrix | Index/call/put × horizon: P(up), trust, target time, projected close, expected move, cost gate and measured hit rate |
-| 04 Realtime auto-AI | Learner sample counts, hit/miss results, all-time and rolling accuracy, net basis points, drawdown and trust |
-| 05 Strategy matrix | Every discovered rule with per-leg state, confidence, trust, hit/miss and net result, plus three summary rows aggregating UP, DOWN, HOLD and net breadth. Filterable by name |
-| 06 Indicator state | EMA 9/21/50/200, VWAP, SuperTrend, trend, momentum, volatility, flow, channel, regime and the quantitative indicators the strategies and models consume |
-| 07 Forward score | Frozen projections against the close that actually printed |
-| 08 System state | Feed freshness, queues, and the cost assumptions the verdicts use |
+| 02 Money simulator | The funded paper book: equity, net result, reserve drawdown, then a card per leg with its open lot, the blended view behind it, and the decision log and closed trades |
+| 03 Live instruments | Zoom-sharp SVG candlesticks for index, call and put, with blue projected candles on the same price scale as printed ones |
+| 04 Prediction matrix | Index/call/put × horizon: P(up), trust, target time, projected close, expected move, cost gate and measured hit rate |
+| 05 Realtime auto-AI | Learner sample counts, hit/miss results, all-time and rolling accuracy, net basis points, drawdown and trust |
+| 06 Strategy matrix | Every discovered rule with per-leg state, confidence, trust, hit/miss and net result, plus three summary rows aggregating UP, DOWN, HOLD and net breadth. Filterable by name |
+| 07 Indicator state | EMA 9/21/50/200, VWAP, SuperTrend, trend, momentum, volatility, flow, channel, regime and the quantitative indicators the strategies and models consume |
+| 08 Forward score | Frozen projections against the close that actually printed |
+| 09 System state | Feed freshness, queues, and the cost assumptions the verdicts use |
 
 Click any strategy row, AI row, prediction cell or indicator to open the live
 calculation inspector: current values, the formula or policy used, the exact
 threshold comparison, and matured performance evidence. That is also where the
 distinction between probability, confidence, trust and post-cost edge is made
 explicit.
+
+The money simulator's view line opens the same inspector, listing every source
+that fed the blended view — its value, its weight and its weighted contribution —
+beside the projected move, the round-trip hurdle and the resulting edge.
+[Money simulator](money-simulator.md) has the arithmetic.
 
 Projected SVG bars carry only their blue OHLC candles and a subtle solid
 printed/projected boundary — there is no dotted target path. Hover a bar for its

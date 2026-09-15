@@ -39,7 +39,8 @@ src/
 │   │   └── online_research/ six causal incremental classifiers and ledgers
 │   ├── advisory/
 │   │   ├── breakeven_gate/  does the move pay for the position?
-│   │   └── performance_ledger/ strategy accuracy, P&L, drawdown and trust
+│   │   ├── performance_ledger/ strategy accuracy, P&L, drawdown and trust
+│   │   └── money_simulator/ funded paper book: wallets, reserve, real rupees
 │   └── renderers/
 │       └── web/            Flask snapshot API, SVG charts, browser terminal
 ├── runtime/            session, engine, board, nowcast, conviction, bars
@@ -48,7 +49,7 @@ src/
 ```
 
 What is actually registered is the kernel's own index:
-**21 bundled plugins, 43 capabilities**.
+**22 bundled plugins, 44 capabilities**.
 
 ---
 

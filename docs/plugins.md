@@ -61,7 +61,7 @@ A kind is the slot a plugin fills. It exists so a handle can read
 | `features` | Bar → model inputs | `technical` |
 | `strategy` | Bar → signed conviction | `trend`, `momentum`, `reversion`, `volatility`, `channels`, `flow`, `regime`, `statistical_anchor`, `ml_forecast` |
 | `forecast` | Conviction → probabilities and projected paths | `ml_ensemble`, `projection`, `online_research` |
-| `advisory` | Board verdicts and measured research outcomes | `breakeven_gate`, `performance_ledger` |
+| `advisory` | Board verdicts, funded paper books, and measured research outcomes | `breakeven_gate`, `performance_ledger`, `money_simulator` |
 | `renderer` | A snapshot → something a human reads | `web` |
 | `tool` | Offline research that is not part of the live graph | (reserved) |
 
@@ -83,6 +83,7 @@ forecast:projection         provides  projection
 advisory:breakeven_gate     provides  advisory      requires projection
 forecast:online_research    provides  online_research
 advisory:performance_ledger provides  strategy_performance
+advisory:money_simulator    provides  money_simulator
 source:history              provides  history       requires broker
 source:upstox               provides  broker
 ```
@@ -103,7 +104,7 @@ Three rules make this work:
 
 The live index is `kernel.registry.capabilities()` — see
 [Operations § Inspect the plugin graph](operations.md#inspect-the-plugin-graph).
-The bundled tree currently discovers 21 plugins and 43 capabilities. Strategy
+The bundled tree currently discovers 22 plugins and 44 capabilities. Strategy
 manifests derive each `strategy:<name>` capability from their class tuple, so the
 catalog and the live engine cannot silently disagree about which rules exist.
 
