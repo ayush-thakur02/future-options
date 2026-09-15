@@ -13,6 +13,7 @@ runtime policy, not a property of a cache — see :mod:`runtime.bars`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
@@ -35,11 +36,17 @@ class HistorySource:
         broker: Any | None = None,
         offline: bool = False,
         archive_ticks: bool = True,
+        clock: Callable[[], pd.Timestamp] | None = None,
     ) -> None:
         self.settings = settings
         self.broker = broker
         self.offline = offline
         self.archive_ticks = archive_ticks
+        # Injectable for the same reason the calendar is: what counts as "current"
+        # decides whether a provider pull happens at all, and a test that reads
+        # the wall clock can only assert that during market hours. The default is
+        # the wall clock, so nothing else changes.
+        self.clock = clock or (lambda: pd.Timestamp.now(tz=IST))
         self.store = PartitionedStore(
             settings.data_dir,
             settings.instrument_key,
@@ -80,10 +87,14 @@ class HistorySource:
 
     # ------------------------------------------------------------------ loads
 
+    def now(self) -> pd.Timestamp:
+        """The instant this source considers current."""
+        return self.clock()
+
     def load_cached(self) -> pd.DataFrame:
         """Everything in the store. Empty if the store does not exist yet."""
         if self.archive_ticks:
-            self.archive.materialize(self.store)
+            self.archive.materialize(self.store, now=self.now())
         return self.store.load()
 
     def load_history(
@@ -159,7 +170,7 @@ class HistorySource:
         store.manifest.update(store.dataset, store.key, sources=sources)
 
     def _load_and_refresh(self, cached: pd.DataFrame, days: int, quiet: bool) -> pd.DataFrame:
-        now = pd.Timestamp.now(tz=IST)
+        now = self.now()
         # A plain date, not a Timestamp: it is compared against `now.date()` and
         # subtracted from it below, and `max()` of a date and a tz-aware Timestamp
         # raises rather than coercing. Keeping one type throughout is what makes

@@ -92,7 +92,17 @@ def test_history_startup_recovers_a_killed_recorder_and_reuses_its_candle(tmp_pa
 
 
 def test_archived_closed_minute_prevents_an_unnecessary_provider_pull(tmp_path) -> None:
-    now = pd.Timestamp.now(tz=IST)
+    """Reads a pinned clock on purpose.
+
+    The archive drops anything outside 09:15-15:30, which is correct — a tape
+    written overnight is not a trading session — so a stamp taken from the wall
+    clock only materializes a bar while the market is open. Read against the real
+    clock, this test asserted something true only between 09:15 and 15:30 and
+    something false the rest of the day. Pinning it to a mid-session instant keeps
+    the assertion the same at every hour.
+    """
+    now = pd.Timestamp("2026-09-15 11:30:00", tz=IST)
+    clock = lambda: now  # noqa: E731 — a frozen stand-in for pd.Timestamp.now
     stamp = (now.floor("min") - pd.Timedelta(minutes=1) + pd.Timedelta(seconds=30)).to_pydatetime()
     settings = _settings(tmp_path)
     requested_start = (now - pd.Timedelta(days=5)).normalize()
@@ -108,7 +118,7 @@ def test_archived_closed_minute_prevents_an_unnecessary_provider_pull(tmp_path) 
         },
         index=seed_index,
     )
-    HistorySource(settings).seed(seed)
+    HistorySource(settings, clock=clock).seed(seed)
     store = _tick_store(tmp_path)
     recorder = TickRecorder(store, buffer_size=1)
     recorder.record(Tick(ts=stamp, ltp=24_100.0, instrument_key=store.instrument))
@@ -128,7 +138,7 @@ def test_archived_closed_minute_prevents_an_unnecessary_provider_pull(tmp_path) 
             return None
 
     broker = Broker()
-    bars = HistorySource(settings, broker=broker).load_history(days=5, quiet=True)
+    bars = HistorySource(settings, broker=broker, clock=clock).load_history(days=5, quiet=True)
 
     assert not bars.empty
     assert bars.index[-1] == pd.Timestamp(stamp).floor("min")
