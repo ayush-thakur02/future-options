@@ -258,7 +258,7 @@ class Engine:
         context = StrategyContext(
             bars=self.history,
             features=self.features,
-            extras=self._strategy_extras(),
+            extras=self.strategy_extras(),
         )
         self.signals = self._collect_signals(context)
         if issue_research:
@@ -390,7 +390,7 @@ class Engine:
             },
         )
 
-    def _strategy_extras(self) -> dict:
+    def strategy_extras(self) -> dict:
         if self.anchor_provider is None:
             return {}
         try:
@@ -404,7 +404,7 @@ class Engine:
         close = float(bar["close"])
         if self.performance is not None:
             self.performance.observe(timestamp=stamp, price=close, instrument=self.instrument_key)
-            self._refresh_rule_stats()
+            self.refresh_rule_stats()
         if self.online_lab is not None:
             self.online_lab.observe(timestamp=stamp, price=close, instrument=self.instrument_key)
 
@@ -413,7 +413,7 @@ class Engine:
             return
         stamp = self.history.index[-1].to_pydatetime()
         anchor = float(self.history["close"].iloc[-1])
-        cost = self._research_cost_bps()
+        cost = self.research_cost_bps()
         if self.performance is not None:
             self.performance.issue(
                 (signal for signal in self.signals if signal.meta.get("state") == "ACTIVE"),
@@ -425,16 +425,20 @@ class Engine:
             )
         if self.online_lab is not None:
             row = self._realtime_learning_features()
+            issued = self.online_lab.issue_horizons(
+                row,
+                timestamp=stamp,
+                anchor_price=anchor,
+                horizons=tuple(
+                    bars_ahead * self.bar_minutes for bars_ahead in range(1, 4)
+                ),
+                instrument=self.instrument_key,
+                cost_bps=cost,
+            )
             self.ai_signals = {
-                bars_ahead: self.online_lab.issue(
-                    row,
-                    timestamp=stamp,
-                    anchor_price=anchor,
-                    horizon_min=bars_ahead * self.bar_minutes,
-                    instrument=self.instrument_key,
-                    cost_bps=cost,
-                )
+                bars_ahead: issued[bars_ahead * self.bar_minutes]
                 for bars_ahead in range(1, 4)
+                if bars_ahead * self.bar_minutes in issued
             }
 
     def _realtime_learning_features(self) -> dict[str, float]:
@@ -496,7 +500,14 @@ class Engine:
         row["strategy_meta__active"] = float(len(active))
         return row
 
-    def _refresh_rule_stats(self) -> None:
+    def refresh_rule_stats(self) -> None:
+        """Pull each rule's measured record out of the ledger.
+
+        Also the step that makes a warm-up count. The replay writes thousands of
+        scored outcomes, and until they are read back here the ensemble is still
+        weighting every rule by nothing but its prior — so the whole replay would
+        have happened and the live loop would not have noticed.
+        """
         if self.performance is None:
             return
         self.rule_stats = {
@@ -513,7 +524,7 @@ class Engine:
             for card in self.performance.scorecards(self.instrument_key)
         }
 
-    def _research_cost_bps(self) -> float:
+    def research_cost_bps(self) -> float:
         if self.last_price <= 0:
             return self.settings.cost_hurdle_bps()
         if self.instrument_key == self.settings.instrument_key:
@@ -736,7 +747,7 @@ class Engine:
             )
         if capabilities.get("strategy_performance"):
             self.performance = self.kernel.capability("strategy_performance")
-            self._refresh_rule_stats()
+            self.refresh_rule_stats()
         # Issue an honest forecast immediately from the warmed state. It remains
         # pending until a future bar closes, but makes the auto-learning system
         # visible without waiting one whole interval for the first issue.
@@ -791,7 +802,7 @@ class Engine:
                 "buy_probability": self.online_lab.buy_probability,
                 "sell_probability": self.online_lab.sell_probability,
                 "min_trust_for_action": self.online_lab.min_trust_for_action,
-                "cost_bps": self._research_cost_bps(),
+                "cost_bps": self.research_cost_bps(),
             },
         }
 
