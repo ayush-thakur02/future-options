@@ -36,6 +36,7 @@ import pandas as pd
 
 from core.bars import normalize_candles
 from core.calendar import IST, TradingCalendar
+from core.scoring import trust_weight
 from core.types import Direction, ForecastCandle, MarketSnapshot, Prediction, Signal, Tick
 from kernel import Kernel
 from plugins.strategies import CompositeStrategy, StrategyCatalog, StrategyContext
@@ -59,6 +60,14 @@ ACTIVE_THRESHOLD = 0.15
 VOLUME_RULES = frozenset(
     {"vwap_reversion", "chaikin_flow_trend", "money_flow_reversal", "obv_divergence"}
 )
+
+
+def _trust(measured: dict, strategy: str) -> float:
+    """One rule's measured trust, in [-1, 1]. Zero when it has no record yet."""
+    try:
+        return max(-1.0, min(1.0, float(measured.get(strategy, {}).get("trust_score", 0.0))))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def synchronized(method):
@@ -485,9 +494,16 @@ class Engine:
         for size in range(2, min(order, len(strongest)) + 1):
             for combination in itertools.combinations(strongest, size):
                 names = "__".join(signal.strategy for signal in combination)
+                # Each rule's measured trust weights the combination it takes part
+                # in. Two rules that have never been right together are not the
+                # same evidence as two that have, and without this the learner
+                # could not tell them apart.
+                weight = sum(
+                    trust_weight(_trust(measured, signal.strategy)) for signal in combination
+                ) / size
                 row[f"strategy_combo{size}__{names}"] = math.prod(
                     float(signal.score) for signal in combination
-                )
+                ) * weight
 
         scores = [float(signal.score) for signal in usable]
         active = [score for score in scores if abs(score) >= ACTIVE_THRESHOLD]
@@ -498,6 +514,26 @@ class Engine:
             else 0.0
         )
         row["strategy_meta__active"] = float(len(active))
+
+        # The same blend the live view is built on, handed to the learner as one
+        # number, plus how much of the ensemble is actually trusted and how split
+        # it is. The individual scores say what each rule thinks; these say what
+        # the book believes once every rule is scaled by what it has earned.
+        weighted_total = weight_sum = trusted_mass = 0.0
+        for signal in usable:
+            trust = _trust(measured, signal.strategy)
+            weight = trust_weight(trust)
+            weighted_total += float(signal.score) * weight
+            weight_sum += abs(weight)
+            trusted_mass += max(trust, 0.0)
+        blend = weighted_total / weight_sum if weight_sum else 0.0
+        row["strategy_meta__weighted"] = blend
+        row["strategy_meta__trust_mass"] = trusted_mass / len(usable) if usable else 0.0
+        row["strategy_meta__dissent"] = (
+            sum(1 for signal in usable if float(signal.score) * blend < 0.0) / len(usable)
+            if usable and blend
+            else 0.0
+        )
         return row
 
     def refresh_rule_stats(self) -> None:
@@ -636,9 +672,12 @@ class Engine:
         total = weight_sum = 0.0
         for rule, prior in self.strategy.components:
             stat = self.rule_stats.get(rule.name, {})
-            # Measured trust may raise a prior by at most 25%; unproven rules
-            # retain 75% so a fresh install can still produce research signals.
-            weight = prior * (0.75 + 0.5 * float(stat.get("trust_score", 0.0)))
+            # Measured trust, signed: an unproven rule keeps three quarters of its
+            # prior, a discredited one a quarter, and a proven one a quarter more.
+            # The weight never goes negative, because inverting a rule that has
+            # been wrong for a while is a much larger claim than the evidence
+            # supports — it is down-weighted, not flipped.
+            weight = prior * trust_weight(float(stat.get("trust_score", 0.0)))
             total += self._latest_scores.get(rule.name, 0) * weight
             weight_sum += abs(weight)
         return total / weight_sum if weight_sum else 0.0

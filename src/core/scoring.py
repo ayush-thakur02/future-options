@@ -30,10 +30,43 @@ def wilson_lower(rate: float, count: int, z: float = 1.96) -> float:
     """
     if count <= 0:
         return 0.0
+    centre, spread, denominator = _wilson(rate, count, z)
+    return max(0.0, (centre - spread) / denominator)
+
+
+def wilson_upper(rate: float, count: int, z: float = 1.96) -> float:
+    """Upper bound of the same interval, for the other side of a coin flip."""
+    if count <= 0:
+        return 0.0
+    centre, spread, denominator = _wilson(rate, count, z)
+    return min(1.0, (centre + spread) / denominator)
+
+
+def _wilson(rate: float, count: int, z: float) -> tuple[float, float, float]:
     denominator = 1.0 + z * z / count
     centre = rate + z * z / (2.0 * count)
     spread = z * math.sqrt(rate * (1.0 - rate) / count + z * z / (4.0 * count * count))
-    return max(0.0, (centre - spread) / denominator)
+    return centre, spread, denominator
+
+
+def signed_skill(accuracy: float, samples: int, z: float = 1.96) -> float:
+    """How far a hit rate is from a coin flip, and on which side of it.
+
+    The sign is only claimed when the whole interval clears 0.5. A rule at 20%
+    over five outcomes is evidence of nothing; the same rate over five hundred is
+    evidence that the rule is reliably *wrong* — and a reliable loser is worth
+    knowing about, which is why this is not clamped at zero. A rule nobody can
+    learn anything from returns nothing; a rule that can be counted on to be
+    wrong returns a number just as large as one that can be counted on to be
+    right.
+    """
+    lower = wilson_lower(accuracy, samples, z)
+    if lower > 0.5:
+        return min(1.0, (lower - 0.5) * 2.0)
+    upper = wilson_upper(accuracy, samples, z)
+    if upper < 0.5:
+        return max(-1.0, (upper - 0.5) * 2.0)
+    return 0.0
 
 
 def max_drawdown(outcomes: Sequence[float]) -> float:
@@ -64,32 +97,52 @@ def conservative_strategy_trust(
     net_pnl_sum: float,
     min_trust_samples: int = 50,
 ) -> float:
-    """Trust in one strategy's signals, from only the outcomes seen so far.
+    """Trust in one strategy's signals, from only the outcomes seen so far, in [-1, 1].
 
     Three gates multiplied together, and each one has to be cleared on its own:
 
     * **Evidence** — a fraction of ``min_trust_samples``, so a rule cannot be
       believed on a handful of outcomes however good they were.
-    * **Skill** — the Wilson lower bound of the hit rate, against a coin flip. A
-      rule that is right 52% of the time over a large sample earns a little; one
-      that is right 52% over five outcomes earns nothing.
-    * **Profitability** — the mean net result, post-cost, squashed into [0, 1).
-      Zero or negative means the rule is not worth its own costs, and no amount
-      of directional accuracy changes that.
+    * **Skill** — how far the hit rate's confidence interval sits from a coin
+      flip, *and on which side*. See :func:`signed_skill`: a rule that is reliably
+      wrong scores negative rather than scoring nothing.
+    * **Profitability** — the mean net result, post-cost, squashed into (-1, 1).
+      A rule that loses money after costs earns a negative contribution however
+      accurate it is.
+
+    The range is the point. A zero here means "no evidence", not "bad" — and those
+    are different things. A signed score lets a consumer weight a rule *down*
+    rather than only switching it off, which is what the ensemble does and what
+    the online learners are fed.
     """
     if samples <= 0:
         return 0.0
     accuracy = hits / samples
     mean = net_pnl_sum / samples
     evidence = min(1.0, samples / max(int(min_trust_samples), 1))
-    skill = max(0.0, (wilson_lower(accuracy, samples) - 0.5) * 2.0)
-    profitability = math.tanh(max(mean, 0.0) / 10.0)
-    return max(0.0, min(1.0, evidence * (0.75 * skill + 0.25 * profitability)))
+    skill = signed_skill(accuracy, samples)
+    profitability = math.tanh(mean / 10.0)
+    return max(-1.0, min(1.0, evidence * (0.75 * skill + 0.25 * profitability)))
+
+
+def trust_weight(trust: float) -> float:
+    """How heavily to weight a rule given its trust score.
+
+    In [0.25, 1.25]: an unproven rule keeps three quarters of its prior, a
+    discredited one a quarter, and a proven one a quarter more. Never negative,
+    because a negative weight would invert the signal — and inverting a rule that
+    has simply been wrong for a while is a much larger claim than the evidence
+    supports.
+    """
+    return 0.75 + 0.5 * max(-1.0, min(1.0, float(trust)))
 
 
 __all__ = [
     "conservative_strategy_trust",
     "drawdown_from",
     "max_drawdown",
+    "signed_skill",
+    "trust_weight",
     "wilson_lower",
+    "wilson_upper",
 ]

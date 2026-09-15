@@ -390,6 +390,26 @@ restarts in `data/research/strategies.sqlite3` and is shown both on the dashboar
 and by `StrategyPerformanceLedger` —
 [Operations § Read the research stores](operations.md#read-the-research-stores).
 
+**Trust is signed, in [−1, 1].** Three gates multiply: evidence (a fraction of
+`min_trust_samples`), skill, and profitability.
+
+- *Skill* is how far the hit rate's confidence interval sits from a coin flip,
+  **and on which side**. The sign is only claimed when the whole interval clears
+  0.5 — a rule at 20% over five outcomes is evidence of nothing, while the same
+  rate over five hundred is evidence that the rule is reliably *wrong*. A
+  reliable loser is worth knowing about, which is why this is not clamped at
+  zero: `0.0` means "no evidence", not "bad", and those are different things.
+- *Profitability* is the mean net result, post-cost, squashed into (−1, 1). A
+  rule that loses money after costs scores down however accurate it is.
+
+The score is a **weight**, in `0.75 + 0.5 × trust` — an unproven rule keeps three
+quarters of its prior, a discredited one a quarter, and a proven one a quarter
+more. The weight never goes negative, because inverting a rule that has simply
+been wrong for a while is a much larger claim than the evidence supports: it is
+down-weighted, not flipped. The ensemble, the money simulator, and the online
+learners all read it that way — see
+[Money simulator § A rule's trust is a weight](money-simulator.md#a-rules-trust-is-a-weight-and-it-can-be-negative).
+
 ---
 
 ## Inspecting behaviour

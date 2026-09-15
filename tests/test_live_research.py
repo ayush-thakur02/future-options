@@ -265,3 +265,82 @@ def test_parallel_manifest_updates_preserve_each_instrument(tmp_path):
     with ThreadPoolExecutor(max_workers=4) as executor:
         list(executor.map(update, range(20)))
     assert len(StoreManifest(path).instruments("ticks")) == 20
+
+
+# ------------------------------------------- trust as a weight for the learner
+
+
+def test_the_learner_is_given_the_trust_weighted_strategy_blend(tmp_path) -> None:
+    """Individual scores say what each rule thinks; the learner also gets the book."""
+    settings = Settings(model_dir=tmp_path / "models", data_dir=tmp_path / "data")
+    engine = Engine(Kernel.bootstrap(settings)).bootstrap(generate_candles(days=3, seed=5))
+    try:
+        row = engine.learning_features(-1, engine.signals, {})
+        for key in ("strategy_meta__weighted", "strategy_meta__trust_mass", "strategy_meta__dissent"):
+            assert key in row, f"{key} is missing from what the learner is shown"
+        # Nothing has a record yet, so nothing is trusted and no rule is scaled.
+        assert row["strategy_meta__trust_mass"] == 0.0
+        assert "strategy_combo" in " ".join(row)
+    finally:
+        engine.close()
+
+
+def test_trust_scales_the_combinations_the_learner_sees(tmp_path) -> None:
+    """Two rules that have never worked together are not the same evidence.
+
+    The combo features are not normalised — they are the product of the
+    participants' scores times the weight each participant has earned — so the
+    ratio between a fully trusted pair and a fully discredited one is exactly the
+    ratio of the two weights.
+    """
+    from core.scoring import trust_weight
+
+    settings = Settings(model_dir=tmp_path / "models", data_dir=tmp_path / "data")
+    engine = Engine(Kernel.bootstrap(settings)).bootstrap(generate_candles(days=3, seed=5))
+    try:
+        def measured(score: float) -> dict:
+            return {
+                signal.strategy: {"trust_score": score, "scored": 200, "accuracy": 0.5 + score / 2}
+                for signal in engine.signals
+            }
+
+        trusted = engine.learning_features(-1, engine.signals, measured(1.0))
+        discredited = engine.learning_features(-1, engine.signals, measured(-1.0))
+
+        combos = [key for key in trusted if key.startswith("strategy_combo")]
+        assert combos, "no interaction features were produced"
+        for key in combos:
+            assert trusted[key] == pytest.approx(
+                discredited[key] * trust_weight(1.0) / trust_weight(-1.0), rel=1e-9
+            ), f"{key} was not scaled by the trust of the rules behind it"
+
+        assert trusted["strategy_meta__trust_mass"] == pytest.approx(1.0)
+        assert discredited["strategy_meta__trust_mass"] == pytest.approx(0.0)
+    finally:
+        engine.close()
+
+
+def test_a_rule_is_down_weighted_not_inverted_when_its_trust_goes_negative(tmp_path) -> None:
+    """The ensemble leans away from a discredited rule; it does not flip it."""
+    from core.scoring import trust_weight
+
+    settings = Settings(model_dir=tmp_path / "models", data_dir=tmp_path / "data")
+    engine = Engine(Kernel.bootstrap(settings)).bootstrap(generate_candles(days=3, seed=5))
+    try:
+        assert trust_weight(-1.0) > 0, "a negative weight would invert every rule it touched"
+
+        engine.rule_stats = {
+            signal.strategy: {"trust_score": -1.0, "scored": 200, "accuracy": 0.3}
+            for signal in engine.signals
+        }
+        negative = engine._ensemble_view(StrategyContext(bars=engine.history, features=engine.features))
+
+        engine.rule_stats = {
+            signal.strategy: {"trust_score": 0.0, "scored": 0, "accuracy": 0.5}
+            for signal in engine.signals
+        }
+        neutral = engine._ensemble_view(StrategyContext(bars=engine.history, features=engine.features))
+
+        assert negative * neutral >= 0, "a discredited ensemble changed the sign of the view"
+    finally:
+        engine.close()
