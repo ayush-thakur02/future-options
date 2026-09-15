@@ -1,0 +1,79 @@
+# The money simulator: a funded paper book across the index, the call and the put.
+#
+# Each leg trades exactly one lot. The wallet holds *risk capital*, not notional:
+# a 65-unit index leg is about Rs 1.5 million of exposure and never appears in the
+# wallet, which is what absorbs the Rs 65 a point the position is worth.
+
+# Opening risk capital per leg, in rupees. Sized so a leg survives a normal bad
+# session before it has to borrow: a 65-unit index lot moves about Rs 12,000 on a
+# 190-point day, and an at-the-money premium is roughly Rs 7,000-10,500 a lot.
+opening_balance: 25000.0
+
+# Shared pool the wallets borrow from when they can no longer fund a lot. Draws
+# are repaid out of profits before those profits count as the leg's own, so a leg
+# that recovers returns it and a leg that keeps losing exhausts it.
+reserve: 200000.0
+
+# One lot of the index, call or put. All three trade the same size.
+lot_size: 65
+
+# How often entries are considered. Risk is still checked on every refresh: a
+# stop that is only tested once a minute is not a stop.
+decision_seconds: 30.0
+
+# Forward horizon the projection is read over, in bars.
+horizon_bars: 3
+
+# Minimum blended view before an entry is considered. Matches the strategy
+# layer's own active threshold, so the simulator cannot enter on a reading the
+# strategy panel would still call WAIT.
+entry_view: 0.15
+
+# Expected move must beat the round trip by at least this much, in basis points
+# of the leg's own price. Zero means "only trade when the round trip is expected
+# to pay for itself"; set it negative to study acting on the view alone.
+min_edge_bps: 0.0
+
+# Sources that must lean the way the trade does before it is taken.
+min_confirmations: 1
+
+# A wallet below this fraction of its opening balance borrows from the reserve.
+min_equity_fraction: 0.5
+
+# Stops and targets, as multiples of the leg's own ATR, so they scale with the
+# instrument's volatility rather than being a fixed distance that means something
+# different on the index than on a premium.
+stop_atr: 1.5
+target_atr: 2.5
+# Used only until the ATR has warmed up. A leg reporting a zero ATR would
+# otherwise stop out on the next print.
+fallback_stop_bps: 10.0
+
+# Give up on the thesis after this long, and do not re-enter a leg this soon
+# after closing it.
+max_hold_minutes: 5.0
+min_hold_seconds: 45.0
+cooldown_seconds: 45.0
+
+# The blended view must cross this before an open position is closed as reversed.
+reversal_view: -0.15
+
+# Round-trip cost of an option, as a fraction of its premium: brokerage both ways,
+# exchange charges, STT on the sell leg, GST, and the spread. The same figure the
+# breakeven gate uses, kept separately so neither pack depends on the other.
+option_cost_rate: 0.012
+
+# A four-bar move of four basis points reads as one "fully convinced" projection.
+projection_scale_bps: 4.0
+
+# How much each source counts. Renormalised over the sources actually present, so
+# a missing model does not silently dilute the others.
+weights:
+  strategy: 1.0
+  ai: 0.9
+  model: 0.6
+  projection: 1.2
+  momentum: 0.4
+
+# Set a path to override data/research/money_simulator/<mode>.sqlite3.
+state_path: null
