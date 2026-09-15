@@ -50,6 +50,15 @@ SIGNAL_WINDOW = 600
 # Bars the projection needs before it will draw anything. Two bars of history
 # would produce a path, just not a meaningful one.
 MIN_PROJECTION_BARS = 15
+# A rule reading is only an opinion once it clears this. Shared with the warm-up,
+# which has to draw the same line over the same scores.
+ACTIVE_THRESHOLD = 0.15
+# Rules whose inputs are volume of some kind. An index publishes none, so these
+# abstain there rather than reporting a confident zero about a feature that does
+# not exist.
+VOLUME_RULES = frozenset(
+    {"vwap_reversion", "chaikin_flow_trend", "money_flow_reversal", "obv_divergence"}
+)
 
 
 def synchronized(method):
@@ -271,56 +280,115 @@ class Engine:
         # lookback any strategy applies internally is about 100 bars. Without
         # this, evaluating all strategies across 2000 bars dominated the live
         # loop and made the offline replay unwatchable.
-        if len(context.features) > self.signal_window:
-            context = StrategyContext(
-                bars=context.bars.tail(self.signal_window),
-                features=context.features.tail(self.signal_window),
-                extras=context.extras,
-            )
+        context = self.strategy_window(context)
+        availability = self.data_availability(context)
 
         self._latest_scores = {}
         for rule in self.catalog.all():
             name = rule.name
-            state = "WAIT"
             value = 0.0
-            reason = "conditions not met"
-            try:
-                volume_ok = any(
-                    column in context.bars
-                    and context.bars[column].tail(30).fillna(0).abs().sum() > 0
-                    for column in ("volume", "tick_count")
-                )
-                depth_ok = any(k in context.features and context.features[k].tail(30).abs().sum() > 0
-                               for k in ("depth_imbalance", "depth_imbalance_ma"))
-                if rule.category == "statistical" and not context.extras:
-                    state, reason = "N/A", "No aligned anchor instrument"
-                elif name in {"vwap_reversion", "chaikin_flow_trend", "money_flow_reversal", "obv_divergence"} and not volume_ok:
-                    state, reason = "N/A", "No volume or tick activity"
-                elif name == "order_flow" and not depth_ok:
-                    state, reason = "N/A", "No order-book depth"
-                else:
+            abstained = self.abstention(rule, context, availability)
+            if abstained:
+                state, reason = "N/A", abstained
+            else:
+                try:
                     series = rule.score(context).fillna(0.0)
                     value = float(series.iloc[-1])
-                    reason = rule.describe(value, context) if abs(value) >= 0.15 else rule.description
-                    state = "ACTIVE" if abs(value) >= 0.15 else "WAIT"
-            except Exception as exc:
-                state, reason = "ERROR", f"{type(exc).__name__}: rule inputs unavailable"
+                    reason = rule.describe(value, context) if abs(value) >= ACTIVE_THRESHOLD else rule.description
+                    state = "ACTIVE" if abs(value) >= ACTIVE_THRESHOLD else "WAIT"
+                except Exception as exc:
+                    state, reason = "ERROR", f"{type(exc).__name__}: rule inputs unavailable"
             self._latest_scores[name] = value
-            measured = self.rule_stats.get(name, {"scored": 0, "hits": 0, "trust_score": 0.0})
-            signals.append(Signal(ts=self.history.index[-1].to_pydatetime(), strategy=name,
-                                  direction=Direction.from_value(value, 0.15), strength=abs(value),
-                                  reason=reason, meta={
-                                      "state": state,
-                                      "raw_score": value,
-                                      "active_threshold": 0.15,
-                                      "category": rule.category,
-                                      "description": rule.description,
-                                      "trust_min_samples": getattr(
-                                          self.performance, "min_trust_samples", 50
-                                      ),
-                                      **measured,
-                                  }))
+            signals.append(
+                self.build_signal(
+                    rule,
+                    ts=self.history.index[-1].to_pydatetime(),
+                    value=value,
+                    state=state,
+                    reason=reason,
+                    measured=self.rule_measurement(name),
+                )
+            )
         return signals
+
+    # Shared with the warm-up replay, which evaluates the same rules over
+    # thousands of past bars. One construction, so a signal the replay issues and
+    # a signal the live loop issues cannot end up carrying different metadata.
+
+    def strategy_window(self, context: StrategyContext) -> StrategyContext:
+        """Trim a context to the bars a strategy actually looks back over."""
+        if len(context.features) <= self.signal_window:
+            return context
+        return StrategyContext(
+            bars=context.bars.tail(self.signal_window),
+            features=context.features.tail(self.signal_window),
+            extras=context.extras,
+        )
+
+    @staticmethod
+    def data_availability(context: StrategyContext) -> tuple[bool, bool]:
+        """Whether the data carries volume and order-book depth at all.
+
+        An index publishes neither, so several rules have nothing to read rather
+        than reading zero — and a rule that reports a confident zero on a feature
+        that does not exist is worse than one that abstains.
+        """
+        volume = any(
+            column in context.bars
+            and context.bars[column].tail(30).fillna(0).abs().sum() > 0
+            for column in ("volume", "tick_count")
+        )
+        depth = any(
+            key in context.features and context.features[key].tail(30).abs().sum() > 0
+            for key in ("depth_imbalance", "depth_imbalance_ma")
+        )
+        return volume, depth
+
+    @staticmethod
+    def abstention(
+        rule, context: StrategyContext, availability: tuple[bool, bool]
+    ) -> str:
+        """Why ``rule`` cannot speak on this data. Empty string means it can."""
+        volume, depth = availability
+        if rule.category == "statistical" and not context.extras:
+            return "No aligned anchor instrument"
+        if rule.name in VOLUME_RULES and not volume:
+            return "No volume or tick activity"
+        if rule.name == "order_flow" and not depth:
+            return "No order-book depth"
+        return ""
+
+    def rule_measurement(self, name: str) -> dict:
+        """What this rule has actually scored, as the ledger recorded it."""
+        return self.rule_stats.get(name, {"scored": 0, "hits": 0, "trust_score": 0.0})
+
+    def build_signal(
+        self,
+        rule,
+        *,
+        ts: datetime,
+        value: float,
+        state: str,
+        reason: str,
+        measured: dict,
+    ) -> Signal:
+        """One strategy reading, with the metadata every consumer reads."""
+        return Signal(
+            ts=ts,
+            strategy=rule.name,
+            direction=Direction.from_value(value, ACTIVE_THRESHOLD),
+            strength=abs(value),
+            reason=reason,
+            meta={
+                "state": state,
+                "raw_score": value,
+                "active_threshold": ACTIVE_THRESHOLD,
+                "category": rule.category,
+                "description": rule.description,
+                "trust_min_samples": getattr(self.performance, "min_trust_samples", 50),
+                **measured,
+            },
+        )
 
     def _strategy_extras(self) -> dict:
         if self.anchor_provider is None:
@@ -370,26 +438,36 @@ class Engine:
             }
 
     def _realtime_learning_features(self) -> dict[str, float]:
+        return self.learning_features(-1, self.signals, self.rule_stats)
+
+    def learning_features(
+        self,
+        position: int,
+        signals: list[Signal],
+        measured: dict,
+    ) -> dict[str, float]:
         """Technical state plus bounded strategy permutations and past quality.
 
-        Every value is known at issue time. Strategy accuracy/trust comes only
-        from previously matured outcomes, so feeding it back into the online
-        learner preserves the causal boundary.
+        Every value is known at the bar being described. Strategy accuracy and
+        trust come from a ``measured`` map the caller supplies, which is what
+        keeps the causal boundary: the live loop passes the ledger's current
+        scorecards, and the warm-up passes what had matured *by that bar* rather
+        than what the whole replay later found.
         """
         row = {
             str(name): float(value)
-            for name, value in self.features.iloc[-1].items()
+            for name, value in self.features.iloc[position].items()
             if pd.notna(value) and math.isfinite(float(value))
         }
         usable = [
             signal
-            for signal in self.signals
+            for signal in signals
             if signal.meta.get("state") not in {"N/A", "ERROR"}
             and math.isfinite(float(signal.score))
         ]
         for signal in usable:
             row[f"strategy__{signal.strategy}"] = float(signal.score)
-            stat = self.rule_stats.get(signal.strategy, {})
+            stat = measured.get(signal.strategy, {})
             row[f"strategy_trust__{signal.strategy}"] = float(stat.get("trust_score", 0.0))
             samples = int(stat.get("scored", 0))
             row[f"strategy_edge__{signal.strategy}"] = (
@@ -408,7 +486,7 @@ class Engine:
                 )
 
         scores = [float(signal.score) for signal in usable]
-        active = [score for score in scores if abs(score) >= 0.15]
+        active = [score for score in scores if abs(score) >= ACTIVE_THRESHOLD]
         row["strategy_meta__breadth"] = sum(active) / len(active) if active else 0.0
         row["strategy_meta__agreement"] = (
             abs(sum(1 if score > 0 else -1 for score in active)) / len(active)
