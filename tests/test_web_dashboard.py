@@ -109,3 +109,56 @@ def test_web_polling_is_never_slower_than_one_second() -> None:
 def test_invalid_web_bind_configuration_fails_early(host: str, port: int) -> None:
     with pytest.raises(ValueError):
         WebRenderer(host=host, port=port, open_browser=False)
+
+
+# ------------------------------------------------------ dashboard asset wiring
+
+
+def _static(name: str) -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "src/plugins/renderers/web/static" / name).read_text()
+
+
+def test_the_money_decision_logs_prose_column_wraps() -> None:
+    """The one column that is a sentence, not a number.
+
+    Both money tables sit in half the panel. With the reason left on the default
+    `nowrap` the table ran off the side of the card and the reader had to scroll
+    sideways to find out why a decision was taken, which rather defeats the
+    column. This pins the pairing: the script asks for the wrapping class and the
+    stylesheet defines it.
+    """
+    script = _static("dashboard.js")
+    style = _static("dashboard.css")
+
+    assert 'table(["time", "leg", "action", "result", "why"], decisions, ["cyan", "cyan", "", "", "reason"])' in script, (
+        "the money decision log stopped asking for the wrapping class"
+    )
+    assert ".money-tables td.reason { white-space: normal;" in style, (
+        "the money tables lost their wrapping rule"
+    )
+
+
+def test_the_money_tables_pin_their_numeric_columns() -> None:
+    """Fixed layout so a long reason cannot squeeze the numbers out of the card."""
+    style = _static("dashboard.css")
+    assert ".money-tables table { table-layout: fixed; }" in style
+    assert "#money-decisions th:not(:last-child) { width:" in style
+    # The tag's own minimum width is wider than the column it sits in.
+    assert ".money-tables .tag { min-width: 0; }" in style
+
+
+def test_every_money_panel_anchor_exists_in_the_template() -> None:
+    """The script writes into ids the template has to define, and vice versa."""
+    from pathlib import Path
+
+    script = _static("dashboard.js")
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "src/plugins/renderers/web/templates/dashboard.html"
+    ).read_text()
+
+    for anchor in ("money-summary", "money-wallets", "money-decisions", "money-trades"):
+        assert f'id="{anchor}"' in template, f"{anchor} is missing from the template"
+        assert f'byId("{anchor}")' in script, f"nothing renders {anchor}"

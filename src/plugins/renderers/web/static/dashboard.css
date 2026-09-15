@@ -185,6 +185,17 @@ tbody tr.inspectable:hover { background: rgba(36, 87, 214, .075); }
 .money-stats .readout:last-child { border-right: 0; }
 .money-tables { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 .money-heading { margin-bottom: 7px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .1em; }
+/* Both tables sit in half the panel, so the columns have to stay out of each
+   other's way: the prose column takes whatever the numbers do not, and wraps
+   rather than pushing the table off the side of the card. The tag's own 45px
+   floor is dropped here — in a column this narrow it is the border that would
+   overflow, not the label. */
+.money-tables table { table-layout: fixed; }
+.money-tables th, .money-tables td { padding: 7px 8px; overflow: hidden; text-overflow: ellipsis; }
+.money-tables td.reason { white-space: normal; overflow-wrap: anywhere; }
+.money-tables .tag { min-width: 0; }
+#money-decisions th:not(:last-child) { width: 64px; }
+#money-decisions th:nth-child(4) { width: 92px; }
 
 input[type="search"] { width: min(250px, 26vw); padding: 7px 9px; border: 1px solid var(--line-hot); outline: none; background: #fff; color: var(--green); font: 10px var(--mono); }
 input[type="search"]:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(8, 122, 79, .12); }

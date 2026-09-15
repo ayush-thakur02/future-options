@@ -784,11 +784,12 @@ function renderStrategies(payload) {
       ...states,
       percent(signal.strength),
       percent(meta.trust_score),
+      trustWeight(meta.trust_score),
       meta.scored ? `${meta.hits || 0}/${Math.max((meta.scored || 0) - (meta.hits || 0), 0)}` : "—",
       meta.scored ? signed(meta.net_pnl_bps, 1, "bp") : "—",
     ];
   });
-  const headers = ["strategy", ...legs.map((leg) => leg.label), "confidence", "trust", "hit/miss", "net"];
+  const headers = ["strategy", ...legs.map((leg) => leg.label), "confidence", "trust", "weight", "hit/miss", "net"];
   const classes = ["cyan", ...legs.map(() => "")];
   const strategyTable = table(headers, rows, classes);
   if (strategyTable.tagName === "TABLE") {
@@ -976,6 +977,16 @@ function moneyTone(value) {
   return parsed > 0 ? "up" : "down";
 }
 
+function trustWeight(value) {
+  // The weight a rule carries into the ensemble and into the learner: an
+  // unproven rule keeps three quarters of its prior, a discredited one a
+  // quarter, a proven one a quarter more. Never negative — a rule that has been
+  // wrong for a while is down-weighted, not inverted.
+  const trust = finite(value);
+  if (trust === null) return "0.75";
+  return fmt(0.75 + 0.5 * Math.max(-1, Math.min(1, trust)), 2);
+}
+
 function renderMoneySummary(money) {
   const reserve = money.reserve || {};
   const policy = money.policy || {};
@@ -1007,9 +1018,17 @@ function moneyViewLine(wallet, policy) {
     return line;
   }
   const tone = moneyTone(view.edge_bps);
+  const path = (view.horizon_directions || []).map((sign) => (sign > 0 ? "+" : sign < 0 ? "−" : "0")).join("");
   line.append(node("span", "cyan", `VIEW ${signed(view.view, 2)}`));
   line.append(node("span", "", `EDGE ${signed(view.edge_bps, 1, "bp")} · ${signedRupee(view.edge_rupees)}`));
   line.append(node("span", "muted", `PROJECTS ${fmt(view.expected_move_bps, 1)}bp vs NEEDS ${fmt(view.required_move_bps, 1)}bp`));
+  // Which source is carrying the view, and where the projected path points bar
+  // by bar. A trade is only taken when the path leads and every bar agrees, so
+  // both belong where the decision is read.
+  line.append(
+    node("span", view.projection_leads ? "projection" : "hold", path ? `PATH ${path}` : "NO PATH"),
+  );
+  line.append(node("span", "cyan", `LED BY ${String(view.leading_source || "nothing").toUpperCase()}`));
   line.append(node("span", tone, `${view.agreement || "0/0"} AGREE`));
   line.title = "Click to inspect which source carried the view";
   line.addEventListener("click", () => showMoneyCalculation(wallet, policy));
@@ -1082,7 +1101,10 @@ function renderMoney(payload) {
     decision.reason,
   ]);
   byId("money-decisions").replaceChildren(
-    table(["time", "leg", "action", "result", "why"], decisions, ["cyan", "cyan", "", "", "muted"]),
+    // The reason carries the wrapping class: it is the one column that is a
+    // sentence rather than a number, and without it the table runs off the side
+    // of the panel and the reader has to scroll sideways to find out why.
+    table(["time", "leg", "action", "result", "why"], decisions, ["cyan", "cyan", "", "", "reason"]),
   );
 
   const trades = (money.trades || []).slice(0, 30).map((trade) => [
@@ -1101,7 +1123,7 @@ function renderMoney(payload) {
     table(
       ["entry", "leg", "side", "units", "in", "out", "gross", "costs", "net", "exit"],
       trades,
-      ["cyan", "cyan", "", "", "", "", "", "muted", "", "muted"],
+      ["cyan", "cyan", "", "", "", "", "", "muted", "", "reason"],
     ),
   );
 }
@@ -1133,18 +1155,28 @@ function showMoneyCalculation(wallet, policy = {}) {
     lead: "Every source the platform computes is blended into one signed view for this leg, then tested against what the round trip actually costs. The blend is renormalised over the sources that are present, so an untrained model does not dilute the rest.",
     metrics: [
       ["BLENDED VIEW", signed(view.view, 3), moneyTone(view.view)],
+      ["LED BY", String(view.leading_source || "nothing").toUpperCase(), view.projection_leads ? "projection" : "hold"],
+      ["PROJECTED PATH", (view.horizon_directions || []).map((sign) => (sign > 0 ? "+" : sign < 0 ? "−" : "0")).join("") || "—", "projection"],
       ["EDGE / LOT", `${signed(view.edge_bps, 1, "bp")} · ${signedRupee(view.edge_rupees)}`, moneyTone(view.edge_bps)],
-      ["PROJECTED MOVE", `${fmt(view.expected_move_bps, 1)}bp`, "prediction"],
       ["ROUND TRIP COST", `${fmt(view.required_move_bps, 1)}bp`, "muted"],
       ["OPEN LOT", position ? `${position.side} ${position.units} @ ${fmt(position.entry_price)}` : "FLAT", position ? directionClass(position.side) : "hold"],
     ],
     formula: [
       "view = Σ(sourceᵢ × weightᵢ) ÷ Σ(weightᵢ)   over the sources present",
+      "weightᵢ = configured weight × (0.75 + 0.5 × trustᵢ)   in [0.25, 1.25] × the prior",
       `expected_move_bps = ${fmt(view.expected_move_bps, 2)}   (the projection, restated in this leg's own price)`,
       `required_move_bps  = ${fmt(view.required_move_bps, 2)}   (round trip + the decay paid while holding)`,
       `edge_bps = |expected| − required = ${signed(view.edge_bps, 2)}`,
-      `an entry needs |view| ≥ ${fmt(policy.entry_view, 2)} and edge ≥ ${fmt(policy.min_edge_bps, 2)}bp`,
-      `positions are one lot of ${policy.lot_size || "—"} units; stops sit at ${fmt(policy.stop_atr, 2)}×ATR and targets at ${fmt(policy.target_atr, 2)}×ATR`,
+      "",
+      "an entry needs ALL of:",
+      `  |view| ≥ ${fmt(policy.entry_view, 2)}`,
+      `  the projection to LEAD the view (it is ${String(view.leading_source || "nothing").toUpperCase()})`,
+      "  every bar of the projected path to point where the trade does",
+      `  ≥ ${policy.min_confirmations || 1} weighted source(s) to agree`,
+      `  edge ≥ ${fmt(policy.min_edge_bps, 2)}bp`,
+      "",
+      `the order then waits up to ${fmt(policy.entry_timeout_seconds, 0)}s for a price the tape prints,`,
+      `and opens there — never at the price this decision was made on`,
     ].join("\n"),
     details: [
       sources.length
