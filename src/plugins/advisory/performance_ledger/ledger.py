@@ -10,6 +10,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from core.scoring import conservative_strategy_trust, max_drawdown
+
 from .types import StrategyOutcome, StrategyScorecard
 
 
@@ -161,11 +163,15 @@ class StrategyPerformanceLedger:
         profit = sum(value for value in pnl if value > 0)
         loss = -sum(value for value in pnl if value < 0)
         mean = sum(pnl) / samples if samples else 0.0
-        drawdown = _max_drawdown(pnl)
-        evidence = min(1.0, samples / self.min_trust_samples)
-        skill = max(0.0, (_wilson_lower(accuracy, samples) - 0.5) * 2.0)
-        profitability = math.tanh(max(mean, 0.0) / 10.0)
-        trust = evidence * (0.75 * skill + 0.25 * profitability)
+        drawdown = max_drawdown(pnl)
+        # Shared with the warm-up replay, which has to reach the same number from
+        # a running total rather than from the stored rows.
+        trust = conservative_strategy_trust(
+            hits=hits,
+            samples=samples,
+            net_pnl_sum=sum(pnl),
+            min_trust_samples=self.min_trust_samples,
+        )
         return StrategyScorecard(
             strategy=key[0],
             instrument=key[1],
@@ -181,7 +187,7 @@ class StrategyPerformanceLedger:
             net_pnl_bps=sum(pnl),
             mean_net_pnl_bps=mean,
             max_drawdown_bps=drawdown,
-            trust_score=max(0.0, min(1.0, trust)),
+            trust_score=trust,
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -219,24 +225,6 @@ class StrategyPerformanceLedger:
 
 def _utc(moment: datetime) -> datetime:
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
-
-
-def _max_drawdown(outcomes: list[float]) -> float:
-    equity = peak = deepest = 0.0
-    for outcome in outcomes:
-        equity += outcome
-        peak = max(peak, equity)
-        deepest = max(deepest, peak - equity)
-    return deepest
-
-
-def _wilson_lower(rate: float, count: int, z: float = 1.96) -> float:
-    if count <= 0:
-        return 0.0
-    denominator = 1.0 + z * z / count
-    centre = rate + z * z / (2.0 * count)
-    spread = z * math.sqrt(rate * (1.0 - rate) / count + z * z / (4.0 * count * count))
-    return max(0.0, (centre - spread) / denominator)
 
 
 __all__ = ["StrategyPerformanceLedger"]

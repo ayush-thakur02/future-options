@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import threading
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .algorithms import OnlineClassifier, build_algorithms
-from .metrics import conservative_trust, summarise
+from .metrics import MetricAccumulator, conservative_trust, summarise
 from .persistence import StateRepository
 from .types import (
     AlgorithmPrediction,
@@ -57,6 +58,21 @@ class OnlineResearchLab:
         self.algorithms: dict[str, OnlineClassifier] = build_algorithms(algorithms)
         self._records: list[PredictionRecord] = []
         self._sequence = 0
+        # Scorecards are carried, not recomputed. `scorecards()` used to rescan
+        # every record the lab had ever written, once per issue — so publishing a
+        # forecast got slower the more forecasts had been published. A live
+        # session barely notices; a warm-up replay, which asks for the same
+        # numbers thousands of times from a ledger growing underneath it, cannot
+        # finish at all.
+        self._all_time: dict[str, MetricAccumulator] = {}
+        self._rolling: dict[str, deque[PredictionRecord]] = {}
+        self._dirty: dict[str, PredictionRecord] = {}
+        # Forecasts still waiting on a target bar. Kept beside the ledger rather
+        # than filtered out of it, because "what is due" is asked once per closed
+        # bar and the ledger only ever grows — so the same question would get
+        # slower every minute the platform ran.
+        self._unresolved: dict[str, PredictionRecord] = {}
+        self._expired = 0
         self._repository = StateRepository(self.state_path)
         self._lock = threading.RLock()
         self._restore()
@@ -70,8 +86,16 @@ class OnlineResearchLab:
         horizon_min: int,
         instrument: str = "",
         cost_bps: float | None = None,
+        persist: bool = True,
     ) -> ResearchSignal:
-        """Persist one prediction per algorithm without fitting any learner."""
+        """Persist one prediction per algorithm without fitting any learner.
+
+        ``persist=False`` batches the ledger write into the next :meth:`flush`,
+        which is what turns a backfill of thousands of predictions from thousands
+        of transactions into a handful. Nothing is lost by returning early: the
+        records are held and written by the flush, and a replay always flushes
+        before it finishes.
+        """
         issued_at = _normalise_time(timestamp)
         horizon = int(horizon_min)
         anchor = float(anchor_price)
@@ -86,31 +110,33 @@ class OnlineResearchLab:
         charge = self.default_cost_bps if cost_bps is None else max(0.0, float(cost_bps))
 
         with self._lock:
-            scorecards = {card.algorithm: card for card in self.scorecards()}
+            trust_by_algorithm = {card.algorithm: card.trust_score for card in self.scorecards()}
             predictions: list[AlgorithmPrediction] = []
+            written: list[PredictionRecord] = []
             for name, algorithm in self.algorithms.items():
                 probability = _probability(algorithm.predict_proba(clean_features))
-                trust = scorecards[name].trust_score
+                trust = trust_by_algorithm.get(name, 0.0)
                 action = self._action(probability, trust)
                 prediction_id = self._next_id(name)
                 confidence = abs(probability - 0.5) * 2.0
-                self._records.append(
-                    PredictionRecord(
-                        prediction_id=prediction_id,
-                        algorithm=name,
-                        instrument=str(instrument),
-                        issued_at=issued_at,
-                        target_at=target_at,
-                        horizon_min=horizon,
-                        anchor_price=anchor,
-                        p_up=probability,
-                        action=action,
-                        confidence=confidence,
-                        trust_at_issue=trust,
-                        cost_bps=charge,
-                        features=dict(clean_features),
-                    )
+                record = PredictionRecord(
+                    prediction_id=prediction_id,
+                    algorithm=name,
+                    instrument=str(instrument),
+                    issued_at=issued_at,
+                    target_at=target_at,
+                    horizon_min=horizon,
+                    anchor_price=anchor,
+                    p_up=probability,
+                    action=action,
+                    confidence=confidence,
+                    trust_at_issue=trust,
+                    cost_bps=charge,
+                    features=dict(clean_features),
                 )
+                self._records.append(record)
+                self._unresolved[record.prediction_id] = record
+                written.append(record)
                 predictions.append(
                     AlgorithmPrediction(
                         prediction_id=prediction_id,
@@ -121,7 +147,9 @@ class OnlineResearchLab:
                         trust_score=trust,
                     )
                 )
-            self._persist(self._records[-len(predictions) :])
+            self._mark_dirty(written)
+            if persist:
+                self.flush()
 
         probability, trust = _consensus(predictions)
         return ResearchSignal(
@@ -142,6 +170,7 @@ class OnlineResearchLab:
         timestamp: datetime,
         price: float,
         instrument: str = "",
+        persist: bool = True,
     ) -> list[PredictionRecord]:
         """Score every due forecast and then train it on the realised direction."""
         observed_at = _normalise_time(timestamp)
@@ -154,17 +183,19 @@ class OnlineResearchLab:
             due = sorted(
                 (
                     record
-                    for record in self._records
-                    if not record.is_resolved
-                    and record.instrument == selected_instrument
+                    for record in self._unresolved.values()
+                    if record.instrument == selected_instrument
                     and record.target_at <= observed_at
                 ),
                 key=lambda record: (record.target_at, record.issued_at, record.algorithm),
             )
             scored: list[PredictionRecord] = []
             for record in due:
+                self._unresolved.pop(record.prediction_id, None)
                 if record.target_at < observed_at:
                     record.status = "expired"
+                    self._expired += 1
+                    self._mark_dirty([record])
                     continue
                 realised = (actual / record.anchor_price - 1.0) * 10_000.0
                 target = int(realised > 0.0)
@@ -188,20 +219,36 @@ class OnlineResearchLab:
                 algorithm = self.algorithms.get(record.algorithm)
                 if algorithm is not None:
                     algorithm.update(record.features, target)
+                self._accumulate(record)
+                self._mark_dirty([record])
                 scored.append(record)
-            if due:
-                self._persist(due)
+            if due and persist:
+                self.flush()
             return [_copy_record(record) for record in scored]
+
+    def flush(self) -> None:
+        """Write every record touched since the last flush, in one transaction."""
+        with self._lock:
+            if not self._dirty:
+                return
+            pending = list(self._dirty.values())
+            self._dirty.clear()
+            self._repository.save(
+                sequence=self._sequence,
+                algorithms={
+                    name: algorithm.state_dict() for name, algorithm in self.algorithms.items()
+                },
+                records=pending,
+            )
 
     def scorecards(self) -> list[AlgorithmScorecard]:
         """Rolling and all-time metrics for every installed learner."""
         with self._lock:
             cards: list[AlgorithmScorecard] = []
             for name in self.algorithms:
-                records = [record for record in self._records if record.algorithm == name]
-                scored = [record for record in records if record.is_scored]
-                all_time = summarise(scored)
-                rolling = summarise(scored[-self.rolling_window :])
+                all_time = self._accumulator(name).summary()
+                window = self._rolling.get(name)
+                rolling = summarise(window) if window else summarise(())
                 trust = min(
                     conservative_trust(all_time, self.min_trust_samples),
                     conservative_trust(rolling, self.min_trust_samples),
@@ -269,12 +316,12 @@ class OnlineResearchLab:
     @property
     def pending_count(self) -> int:
         with self._lock:
-            return sum(not record.is_resolved for record in self._records)
+            return len(self._unresolved)
 
     @property
     def expired_count(self) -> int:
         with self._lock:
-            return sum(record.status == "expired" for record in self._records)
+            return self._expired
 
     def describe(self) -> str:
         cards = self.scorecards()
@@ -300,6 +347,26 @@ class OnlineResearchLab:
         self._sequence += 1
         return f"online-{self._sequence:012d}-{algorithm}"
 
+    def _accumulator(self, algorithm: str) -> MetricAccumulator:
+        accumulator = self._all_time.get(algorithm)
+        if accumulator is None:
+            accumulator = MetricAccumulator()
+            self._all_time[algorithm] = accumulator
+        return accumulator
+
+    def _accumulate(self, record: PredictionRecord) -> None:
+        """Fold one newly scored record into the carried scorecards."""
+        self._accumulator(record.algorithm).add(record)
+        window = self._rolling.get(record.algorithm)
+        if window is None:
+            window = deque(maxlen=self.rolling_window)
+            self._rolling[record.algorithm] = window
+        window.append(record)
+
+    def _mark_dirty(self, records: list[PredictionRecord]) -> None:
+        for record in records:
+            self._dirty[record.prediction_id] = record
+
     def _restore(self) -> None:
         payload = self._repository.load()
         if payload is None:
@@ -313,15 +380,15 @@ class OnlineResearchLab:
             state = saved_algorithms.get(name)
             if state is not None:
                 algorithm.load_state_dict(dict(state))
-
-    def _persist(self, records: list[PredictionRecord]) -> None:
-        self._repository.save(
-            sequence=self._sequence,
-            algorithms={
-                name: algorithm.state_dict() for name, algorithm in self.algorithms.items()
-            },
-            records=records,
-        )
+        # The carried scorecards start empty and are rebuilt from the restored
+        # ledger, so a restart reports the same numbers it reported before.
+        for record in self._records:
+            if record.is_scored:
+                self._accumulate(record)
+            elif record.status == "expired":
+                self._expired += 1
+            else:
+                self._unresolved[record.prediction_id] = record
 
 
 def _clean_features(features: Mapping[str, Any]) -> dict[str, float]:
