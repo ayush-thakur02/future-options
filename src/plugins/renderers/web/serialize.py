@@ -33,6 +33,7 @@ def serialize_snapshot(
             "headline": snapshot.headline,
             "note": snapshot.note,
             "chain": _json(snapshot.chain),
+            "simulation": _json(snapshot.simulation),
             "legs": [
                 _leg(item, max_candles=max_candles)
                 for item in snapshot.legs

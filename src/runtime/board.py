@@ -24,7 +24,6 @@ PUT_KIND = "PE"
 # How far the spot may drift from a leg's strike before the leg is re-struck.
 ROLL_STRIKES = 2.0
 
-
 @dataclass
 class BoardLeg:
     """One instrument on the board, and the engine running it."""
@@ -87,6 +86,18 @@ class MarketBoard:
 
             self.source = LiveOptionSource(kernel.build("source:upstox"), self.executor, days)
         self.advisor = kernel.capability("advisory") if kernel.registry.capabilities().get("advisory") else None
+        # The funded paper book. Built fresh rather than memoised because it needs
+        # to know whether it is scoring a live session or a replay — the two keep
+        # separate ledgers, and a simulation's losses must not appear in the live
+        # record. Reached through the capability, so any pack can supply it.
+        self.simulator = (
+            kernel.new(
+                kernel.provider("money_simulator"),
+                mode="live" if live else "simulation",
+            )
+            if kernel.registry.capabilities().get("money_simulator")
+            else None
+        )
         self.legs: list[BoardLeg] = []
         self.index_bars: pd.DataFrame = pd.DataFrame()
         self.expiry = None
@@ -283,11 +294,73 @@ class MarketBoard:
     # -------------------------------------------------------------- projection
 
     def refresh_projection(self) -> bool:
-        """Rebuild every instrument's path on the shared clock."""
+        """Rebuild every instrument's path on the shared clock.
+
+        The simulator is driven from here too, because this is the clock that
+        already means "the market has moved and it is time to look again". Exits
+        run on every refresh and entries only when the simulator's own decision
+        interval is due, so a stop is never more than one tick away.
+        """
         produced = list(self.executor.map(lambda leg: leg.engine.refresh_projection(), self.legs))
+        self._step_simulator()
         if self.on_refresh is not None:
             self.on_refresh()
         return any(produced)
+
+    def _step_simulator(self) -> None:
+        """Hand the current leg state to the paper book, if it is watching."""
+        if self.simulator is None or not self.legs:
+            return
+        moment = self.index_engine.last_tick_ts or self.index_engine.last_quote_ts
+        if moment is None:
+            # Nothing has printed yet. A decision taken on a warm-up frame would
+            # be a decision taken on a price no one could have traded.
+            return
+        try:
+            self.simulator.step(
+                [self._leg_payload(leg) for leg in self.legs],
+                moment,
+                session_open=self._session_open(moment),
+            )
+        except Exception as exc:  # noqa: BLE001 — the book must not take the board down
+            self.log.warning("money simulator step failed: %s", exc)
+
+    def _session_open(self, moment) -> bool:
+        """Whether entries are allowed. A replay is always in session."""
+        if not self.live:
+            return True
+        return self.index_engine.calendar.is_open(moment)
+
+    def _leg_payload(self, leg: BoardLeg) -> dict:
+        """One leg as the plain description an advisory pack reads.
+
+        A mapping rather than this pack's own record: the runtime should depend on
+        the shape of what it hands over, not on a class inside a plugin, so the
+        simulator can be replaced without touching the board.
+        """
+        engine = leg.engine
+        forecaster = engine.forecaster
+        return {
+            "label": leg.label,
+            "kind": leg.kind,
+            "instrument": leg.instrument_key or engine.instrument_key,
+            "price": engine.last_price,
+            "spot": self.index_engine.last_price,
+            # A call gains when the index gains and a put loses; that sign is the
+            # whole relationship between a leg and the thing it is priced off.
+            "index_beta": -1.0 if leg.kind == PUT_KIND else 1.0,
+            "signals": engine.signals,
+            "ai_signal": engine.ai_signals.get(1) if engine.ai_signals else None,
+            "predictions": engine.predictions,
+            "projections": engine.projections,
+            # The underlying's path, which an option leg cannot report itself: a
+            # premium's own projection is a levered series, not the index's.
+            "index_projections": self.index_engine.projections,
+            "conviction": engine.conviction,
+            "atr": getattr(forecaster, "atr", 0.0) if forecaster is not None else 0.0,
+            "micro": getattr(forecaster, "micro", 0.0) if forecaster is not None else 0.0,
+            "greeks": dict(leg.greeks),
+        }
 
     def close(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=True)
@@ -317,6 +390,7 @@ class MarketBoard:
                 for leg in self.legs
             ],
             chain=self._chain_summary(),
+            simulation=self.simulator.snapshot() if self.simulator is not None else {},
         )
         if self.advisor is not None:
             board = self.advisor.advise(board, bar_minutes=self.bar_minutes)

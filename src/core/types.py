@@ -277,6 +277,10 @@ class BoardSnapshot:
     chain: dict = field(default_factory=dict)
     headline: str = ""
     note: str = ""
+    # The funded paper book's state: wallets, open lots, decisions, closed trades.
+    # A dict rather than a typed record because the board draws it and nothing
+    # else consumes it — the same reason ``chain`` is one.
+    simulation: dict = field(default_factory=dict)
 
     def leg(self, label: str) -> LegSnapshot | None:
         for item in self.legs:
