@@ -415,3 +415,41 @@ def test_forecaster_describes_itself(bars) -> None:
     described = forecaster.describe()
     assert described["bars_ahead"] == 3
     assert "tracking" in described
+
+
+def test_atr_matches_the_pandas_version(bars) -> None:
+    """The array path and the frame path have to agree on every shape.
+
+    `atr_of` was rewritten without pandas because it runs once per projected bar
+    per instrument. The trap is the first bar, which has no previous close:
+    `DataFrame.max(axis=1)` skips that NaN, while `numpy.maximum` would propagate
+    it and quietly drop the bar from the mean.
+    """
+    import numpy as np
+
+    def pandas_atr(frame: pd.DataFrame, window: int = 14) -> float:
+        if frame.empty:
+            return 0.0
+        high = frame["high"].astype("float64")
+        low = frame["low"].astype("float64")
+        close = frame["close"].astype("float64")
+        previous = close.shift(1)
+        true_range = pd.concat(
+            [high - low, (high - previous).abs(), (low - previous).abs()], axis=1
+        ).max(axis=1)
+        value = float(true_range.tail(window).mean())
+        if not np.isfinite(value) or value <= 0.0:
+            price = float(close.iloc[-1]) if len(close) else 0.0
+            return price * 1e-5
+        return value
+
+    for length in (1, 2, 3, 14, 15, 60, 200):
+        window = bars.tail(length)
+        assert atr_of(window) == pytest.approx(pandas_atr(window), rel=1e-12), (
+            f"atr_of disagreed with pandas over {length} bars"
+        )
+
+    flat = bars.tail(30).copy()
+    for column in ("open", "high", "low", "close"):
+        flat[column] = 24_000.0
+    assert atr_of(flat) == pandas_atr(flat) == 24_000.0 * 1e-5

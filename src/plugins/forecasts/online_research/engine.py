@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
@@ -88,81 +88,117 @@ class OnlineResearchLab:
         cost_bps: float | None = None,
         persist: bool = True,
     ) -> ResearchSignal:
-        """Persist one prediction per algorithm without fitting any learner.
+        """Persist one prediction per algorithm without fitting any learner."""
+        horizon = int(horizon_min)
+        return self.issue_horizons(
+            features,
+            timestamp=timestamp,
+            anchor_price=anchor_price,
+            horizons=(horizon,),
+            instrument=instrument,
+            cost_bps=cost_bps,
+            persist=persist,
+        )[horizon]
+
+    def issue_horizons(
+        self,
+        features: Mapping[str, Any],
+        *,
+        timestamp: datetime,
+        anchor_price: float,
+        horizons: Sequence[int],
+        instrument: str = "",
+        cost_bps: float | None = None,
+        persist: bool = True,
+    ) -> dict[int, ResearchSignal]:
+        """Issue for several horizons at once, predicting once per learner.
+
+        The three-horizon fan-out asks the same question of the same feature row
+        three times. Every learner is deterministic and stateless between issues,
+        so the answer is identical each time — and computing it once instead of
+        three times is what makes a warm-up replay of thousands of bars finish,
+        while leaving the live loop's three predictions unchanged.
 
         ``persist=False`` batches the ledger write into the next :meth:`flush`,
-        which is what turns a backfill of thousands of predictions from thousands
-        of transactions into a handful. Nothing is lost by returning early: the
-        records are held and written by the flush, and a replay always flushes
-        before it finishes.
+        which turns a backfill from thousands of transactions into a handful.
+        Nothing is lost by returning early: the records are held and written by
+        the flush, and a replay always flushes before it finishes.
         """
         issued_at = _normalise_time(timestamp)
-        horizon = int(horizon_min)
         anchor = float(anchor_price)
-        if horizon <= 0:
-            raise ValueError("horizon_min must be positive")
+        wanted = tuple(sorted({int(h) for h in horizons}))
+        if not wanted or wanted[0] <= 0:
+            raise ValueError("horizons must contain positive values")
         if not math.isfinite(anchor) or anchor <= 0.0:
             raise ValueError("anchor_price must be a positive finite number")
         clean_features = _clean_features(features)
         if not clean_features:
             raise ValueError("features must contain at least one finite numeric value")
-        target_at = issued_at + timedelta(minutes=horizon)
         charge = self.default_cost_bps if cost_bps is None else max(0.0, float(cost_bps))
 
         with self._lock:
             trust_by_algorithm = {card.algorithm: card.trust_score for card in self.scorecards()}
-            predictions: list[AlgorithmPrediction] = []
-            written: list[PredictionRecord] = []
+            probabilities: dict[str, float] = {}
+            trusts: dict[str, float] = {}
             for name, algorithm in self.algorithms.items():
                 probability = _probability(algorithm.predict_proba(clean_features))
-                trust = trust_by_algorithm.get(name, 0.0)
-                action = self._action(probability, trust)
-                prediction_id = self._next_id(name)
-                confidence = abs(probability - 0.5) * 2.0
-                record = PredictionRecord(
-                    prediction_id=prediction_id,
-                    algorithm=name,
-                    instrument=str(instrument),
-                    issued_at=issued_at,
-                    target_at=target_at,
-                    horizon_min=horizon,
-                    anchor_price=anchor,
-                    p_up=probability,
-                    action=action,
-                    confidence=confidence,
-                    trust_at_issue=trust,
-                    cost_bps=charge,
-                    features=dict(clean_features),
-                )
-                self._records.append(record)
-                self._unresolved[record.prediction_id] = record
-                written.append(record)
-                predictions.append(
-                    AlgorithmPrediction(
-                        prediction_id=prediction_id,
+                probabilities[name] = probability
+                trusts[name] = trust_by_algorithm.get(name, 0.0)
+
+            signals: dict[int, ResearchSignal] = {}
+            written: list[PredictionRecord] = []
+            for horizon in wanted:
+                target_at = issued_at + timedelta(minutes=horizon)
+                predictions: list[AlgorithmPrediction] = []
+                for name in self.algorithms:
+                    probability = probabilities[name]
+                    trust = trusts[name]
+                    action = self._action(probability, trust)
+                    confidence = abs(probability - 0.5) * 2.0
+                    record = PredictionRecord(
+                        prediction_id=self._next_id(name),
                         algorithm=name,
+                        instrument=str(instrument),
+                        issued_at=issued_at,
+                        target_at=target_at,
+                        horizon_min=horizon,
+                        anchor_price=anchor,
                         p_up=probability,
                         action=action,
                         confidence=confidence,
-                        trust_score=trust,
+                        trust_at_issue=trust,
+                        cost_bps=charge,
+                        features=dict(clean_features),
                     )
+                    self._records.append(record)
+                    self._unresolved[record.prediction_id] = record
+                    written.append(record)
+                    predictions.append(
+                        AlgorithmPrediction(
+                            prediction_id=record.prediction_id,
+                            algorithm=name,
+                            p_up=probability,
+                            action=action,
+                            confidence=confidence,
+                            trust_score=trust,
+                        )
+                    )
+                probability, trust = _consensus(predictions)
+                signals[horizon] = ResearchSignal(
+                    issued_at=issued_at,
+                    target_at=target_at,
+                    instrument=str(instrument),
+                    horizon_min=horizon,
+                    p_up=probability,
+                    action=self._action(probability, trust),
+                    confidence=abs(probability - 0.5) * 2.0,
+                    trust_score=trust,
+                    predictions=tuple(predictions),
                 )
             self._mark_dirty(written)
             if persist:
                 self.flush()
-
-        probability, trust = _consensus(predictions)
-        return ResearchSignal(
-            issued_at=issued_at,
-            target_at=target_at,
-            instrument=str(instrument),
-            horizon_min=horizon,
-            p_up=probability,
-            action=self._action(probability, trust),
-            confidence=abs(probability - 0.5) * 2.0,
-            trust_score=trust,
-            predictions=tuple(predictions),
-        )
+            return signals
 
     def observe(
         self,

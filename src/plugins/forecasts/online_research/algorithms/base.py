@@ -71,6 +71,24 @@ class CausalScaler:
             transformed[name] = max(-self.clip, min(self.clip, normalised))
         return transformed
 
+    def stats(self, name: str) -> tuple[float, float]:
+        """``(mean, standard deviation)`` for one feature; ``(0, 0)`` if unseen.
+
+        Exposed so a caller standardising many vectors can lift the statistics out
+        of its inner loop. ``standard_deviation`` takes a square root, and a
+        nearest-neighbour search that asks for it per feature per neighbour spends
+        almost all of its time recomputing the same few hundred numbers.
+        """
+        moment = self.moments.get(name)
+        if moment is None:
+            return 0.0, 0.0
+        return moment.mean, moment.standard_deviation
+
+    def standardise(self, value: float, mean: float, scale: float) -> float:
+        """One value against statistics already in hand. Matches :meth:`transform`."""
+        normalised = (value - mean) / scale if scale > 1e-12 else value - mean
+        return max(-self.clip, min(self.clip, normalised))
+
     def update(self, features: dict[str, float]) -> None:
         for name, value in features.items():
             self.moments.setdefault(name, RunningMoment()).update(value)

@@ -52,25 +52,39 @@ DEFAULT_BARS_AHEAD = 3
 
 
 def atr_of(bars: pd.DataFrame, window: int = 14) -> float:
-    """Average true range per bar, in price units."""
+    """Average true range per bar, in price units.
+
+    Array arithmetic rather than three aligned Series and a ``concat``. It is the
+    same reduction — the true range's mean over the last ``window`` bars, skipping
+    the first bar, which has no previous close — but the pandas version spent
+    most of its time building and reindexing frames, and this runs once per
+    projected bar for every instrument.
+    """
     if bars.empty:
         return 0.0
-    high = bars["high"].astype("float64")
-    low = bars["low"].astype("float64")
-    close = bars["close"].astype("float64")
-    prev_close = close.shift(1)
+    high = bars["high"].to_numpy(dtype="float64")
+    low = bars["low"].to_numpy(dtype="float64")
+    close = bars["close"].to_numpy(dtype="float64")
+    if high.size == 0:
+        return 0.0
 
-    true_range = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
+    previous = np.empty_like(close)
+    previous[0] = np.nan
+    previous[1:] = close[:-1]
+    # `fmax`, not `maximum`: the first bar has no previous close, and pandas'
+    # `max(axis=1)` skips that NaN and keeps the high-low range rather than
+    # poisoning the row. `maximum` would propagate it, and one NaN would then
+    # drop the bar from the mean and change the ATR.
+    true_range = np.fmax(np.fmax(high - low, np.abs(high - previous)), np.abs(low - previous))
+    tail = true_range[-max(int(window), 1) :]
+    finite = tail[np.isfinite(tail)]
 
-    value = float(true_range.tail(window).mean())
+    value = float(finite.mean()) if finite.size else float("nan")
     if not np.isfinite(value) or value <= 0.0:
         # A flat or one-bar series has no range to measure; fall back to a small
         # fraction of price so the projection collapses to a flat line rather
         # than exploding or vanishing.
-        price = float(close.iloc[-1]) if len(close) else 0.0
+        price = float(close[-1]) if close.size else 0.0
         return price * 1e-5
     return value
 

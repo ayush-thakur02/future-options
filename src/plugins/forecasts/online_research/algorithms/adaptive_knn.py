@@ -49,11 +49,26 @@ class OnlineAdaptiveKNN(OnlineClassifier):
         if not selected:
             return 0.5
 
+        # Standardising every stored neighbour from scratch on every prediction is
+        # the whole cost of this model: 160 neighbours x 48 features x a square
+        # root each, asked again for each of the three horizons, on each bar. The
+        # statistics do not depend on the neighbour, so they come out of the loop —
+        # and only the selected features are standardised at all, which is the
+        # difference between asking about 48 numbers and constructing 150.
+        scaler = self.scaler
+        stats = {name: scaler.stats(name) for name in selected}
+        query = {name: query[name] for name in selected}
+
         distances: list[tuple[float, int, int]] = []
         for age, (raw, target) in enumerate(reversed(self.samples)):
-            neighbour = self.scaler.transform(raw)
-            squared = sum((query.get(name, 0.0) - neighbour.get(name, 0.0)) ** 2 for name in selected)
-            distances.append((math.sqrt(squared / len(selected)), age, target))
+            squared = 0.0
+            for name, (mean, scale) in stats.items():
+                value = raw.get(name)
+                neighbour = 0.0 if value is None else scaler.standardise(value, mean, scale)
+                difference = query[name] - neighbour
+                squared += difference * difference
+            distances.append((math.sqrt(squared / len(stats)), age, target))
+
         nearest = sorted(distances, key=lambda item: (item[0], item[1]))[: min(self.k, len(distances))]
 
         weighted_up = 0.5 * self.prior_strength

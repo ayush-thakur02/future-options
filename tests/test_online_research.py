@@ -386,3 +386,132 @@ def test_invalid_inputs_never_enter_the_persistent_ledger(tmp_path) -> None:
     with pytest.raises(ValueError, match="finite numeric"):
         lab.issue({"bad": float("nan")}, timestamp=NOW, anchor_price=100.0, horizon_min=1)
     assert not (tmp_path / "online.sqlite3").exists()
+
+
+# --------------------------------------------------- streaming parity
+
+
+def _scored_record(index: int) -> PredictionRecord:
+    """A reproducible matured record, spanning every branch the metrics take."""
+    from random import Random
+
+    rng = Random(index)
+    p_up = rng.random()
+    label = rng.randint(0, 1)
+    action = [ResearchAction.BUY, ResearchAction.SELL, ResearchAction.HOLD][rng.randint(0, 2)]
+    gross = (1.0 if action == ResearchAction.BUY else -1.0 if action == ResearchAction.SELL else 0.0) * rng.uniform(-30, 30)
+    cost = 4.0
+    return PredictionRecord(
+        prediction_id=f"p{index}",
+        algorithm="a",
+        instrument="IDX",
+        issued_at=NOW,
+        target_at=NOW + timedelta(minutes=1),
+        horizon_min=1,
+        anchor_price=24_000.0,
+        p_up=p_up,
+        action=action,
+        confidence=abs(p_up - 0.5) * 2.0,
+        trust_at_issue=0.0,
+        cost_bps=cost,
+        features={},
+        status="scored",
+        matured_at=NOW + timedelta(minutes=1),
+        actual_price=24_010.0,
+        actual_return_bps=4.0,
+        label_up=label,
+        hit=(p_up >= 0.5) == bool(label),
+        brier=(p_up - label) ** 2,
+        gross_pnl_bps=gross,
+        net_pnl_bps=gross - cost if action != ResearchAction.HOLD else 0.0,
+    )
+
+
+def test_streaming_scorecards_match_the_batch_scorecard() -> None:
+    """A carried scorecard and a rescanned one are the same number.
+
+    The live path folds each outcome in as it arrives and the warm-up asks for
+    the same figures thousands of times; if the two ever disagreed, a rule would
+    carry one trust before the market opened and another afterwards.
+    """
+    from plugins.forecasts.online_research.metrics import MetricAccumulator
+
+    records = [_scored_record(index) for index in range(300)]
+    accumulator = MetricAccumulator()
+
+    for index, record in enumerate(records):
+        accumulator.add(record)
+        assert accumulator.summary() == summarise(records[: index + 1]), (
+            f"the carried scorecard diverged at record {index}"
+        )
+
+
+def test_an_unresolved_record_contributes_nothing_to_a_scorecard() -> None:
+    from plugins.forecasts.online_research.metrics import MetricAccumulator
+
+    pending = PredictionRecord.from_dict(
+        {**_scored_record(1).as_dict(), "status": "pending", "matured_at": None}
+    )
+    accumulator = MetricAccumulator()
+    accumulator.add(pending)
+    assert accumulator.summary() == summarise([])
+
+
+def test_the_knn_predicts_exactly_as_rescaling_every_neighbour() -> None:
+    """The fast path and the readable one have to agree.
+
+    `predict_proba` used to standardise all 160 stored neighbours on every call,
+    with a square root per feature per neighbour — eighteen million of them in a
+    single warm-up. Lifting the statistics out of the loop is only safe if the
+    answer is unchanged.
+    """
+    import math
+    from random import Random
+
+    from plugins.forecasts.online_research.algorithms.adaptive_knn import OnlineAdaptiveKNN
+
+    def original(model: OnlineAdaptiveKNN, features: dict[str, float]) -> float:
+        """The implementation as it was, kept here as the reference."""
+        if not model.samples:
+            return 0.5
+        query = model.scaler.transform(features)
+        selected = {
+            name
+            for name, _ in sorted(query.items(), key=lambda item: (-abs(item[1]), item[0]))[
+                : model.max_features
+            ]
+        }
+        if not selected:
+            return 0.5
+        distances = []
+        for age, (raw, target) in enumerate(reversed(model.samples)):
+            neighbour = model.scaler.transform(raw)
+            squared = sum(
+                (query.get(name, 0.0) - neighbour.get(name, 0.0)) ** 2 for name in selected
+            )
+            distances.append((math.sqrt(squared / len(selected)), age, target))
+        nearest = sorted(distances, key=lambda item: (item[0], item[1]))[
+            : min(model.k, len(distances))
+        ]
+        weighted_up = 0.5 * model.prior_strength
+        total = model.prior_strength
+        for distance, age, target in nearest:
+            recency = math.exp(-math.log(2.0) * age / model.half_life)
+            weight = recency / max(distance, 0.05)
+            weighted_up += weight * target
+            total += weight
+        return weighted_up / total if total else 0.5
+
+    rng = Random(11)
+    names = [f"f{i}" for i in range(150)]
+
+    def draw() -> dict[str, float]:
+        return {name: rng.gauss(0, 1) * rng.uniform(0.2, 4.0) for name in names}
+
+    model = OnlineAdaptiveKNN()
+    for _ in range(300):
+        features = draw()
+        target = int(features["f0"] + features["f1"] > 0)
+        query = draw()
+        assert model.predict_proba(query) == pytest.approx(original(model, query), abs=1e-12)
+        model.update(features, target)
