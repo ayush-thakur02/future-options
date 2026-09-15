@@ -35,7 +35,7 @@ second and redraws; `/api/health` reports whether a snapshot has arrived yet.
 | 06 Strategy matrix | Every discovered rule with per-leg state, confidence, trust, hit/miss and net result, plus three summary rows aggregating UP, DOWN, HOLD and net breadth. Filterable by name |
 | 07 Indicator state | EMA 9/21/50/200, VWAP, SuperTrend, trend, momentum, volatility, flow, channel, regime and the quantitative indicators the strategies and models consume |
 | 08 Forward score | Frozen projections against the close that actually printed |
-| 09 System state | Feed freshness, queues, and the cost assumptions the verdicts use |
+| 09 System state | Feed freshness, queues, the cost assumptions the verdicts use, and what the pre-open warm-up managed |
 
 Click any strategy row, AI row, prediction cell or indicator to open the live
 calculation inspector: current values, the formula or policy used, the exact

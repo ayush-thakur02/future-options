@@ -43,7 +43,7 @@ src/
 │   │   └── money_simulator/ funded paper book: wallets, reserve, real rupees
 │   └── renderers/
 │       └── web/            Flask snapshot API, SVG charts, browser terminal
-├── runtime/            session, engine, board, nowcast, conviction, bars
+├── runtime/            session, engine, board, nowcast, conviction, bars, warmup
 ├── backtest/           costs, engine, report
 └── webapp.py           the launcher that serves the dashboard
 ```

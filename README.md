@@ -12,6 +12,12 @@ every 30 seconds and keeping score in rupees, backed by a shared reserve that ke
 a drawn-down leg investing. It is the platform's cost argument settled in cash
 instead of in basis points — see [Money simulator](docs/money-simulator.md).
 
+Before the feed starts it **warms up**: recent bars are replayed through the same
+strategy and learner ledgers the live loop writes to, so the rules already carry a
+measured hit rate and the online learners are already trained when the first tick
+arrives. A checkpoint means each later start replays only what is new — cold 15s,
+resumed 2.5s. See [Warm-up](docs/warmup.md).
+
 The live board records first-issued forecasts, then measures wins, misses and
 price error as target candles close. Start it with `uv run niftypulse`, which
 serves the browser terminal at <http://127.0.0.1:5050>; add `--offline --speed 60`
@@ -200,6 +206,7 @@ Full documentation is in [`docs/`](docs/README.md).
 | Know what the blue candles are | [Projection](docs/projection.md) |
 | Understand the call/index/put board | [Options](docs/options.md) |
 | See what the strategies make in rupees | [Money simulator](docs/money-simulator.md) |
+| Know why it is already ready at 09:15 | [Warm-up](docs/warmup.md) |
 | Know what is on disk | [Storage](docs/storage.md) |
 | Do anything but watch | [Operations](docs/operations.md) |
 | Look up a setting | [Configuration](docs/configuration.md) |
@@ -289,6 +296,18 @@ Some are worth knowing about:
   unanimous agreement rather than unanimous dissent. It does not do so by default:
   a put's premium is anti-correlated with the index, so contributions have to be
   compared in index space rather than against the leg's own view.
+- `test_no_rule_is_trusted_before_its_first_outcome_matures` pins the warm-up's
+  causal boundary: at the opening bars of a replay nothing a rule does can have
+  been scored, so trust there is exactly zero. Feed the learners the window's
+  final scorecard instead and this fails.
+- `test_a_series_with_real_structure_earns_trust` is the replay's positive
+  control. On generated bars no rule should earn trust however long the replay
+  runs, so that result alone cannot tell a working replay from one that never
+  scored anything.
+- `test_streaming_scorecards_match_the_batch_scorecard` compares a carried
+  scorecard against a rescanned one at every prefix of a 300-record series. The
+  live loop and the replay have to agree, or a rule carries one trust before the
+  market opens and another afterwards.
 
 ## Things that trip people up
 

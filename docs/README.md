@@ -17,6 +17,7 @@ projected candles out, with the calls and the puts beside the index.
 | Know what the blue candles are | [Projection](projection.md) |
 | Understand the call/index/put board | [Options](options.md) |
 | See what the strategies make in rupees | [Money simulator](money-simulator.md) |
+| Know why it is already ready at 09:15 | [Warm-up](warmup.md) |
 | Know what is on disk | [Storage](storage.md) |
 | Do anything but watch | [Operations](operations.md) |
 | Know what every setting does | [Configuration](configuration.md) |
@@ -69,6 +70,7 @@ tuning anything.
 - [ML pipeline](ml-pipeline.md) — labelling, purged validation, models, calibration
 - [Projection](projection.md) — the next three candles, and how they are scored
 - [Options](options.md) — pricing, the chain, the board, the verdicts
+- [Warm-up](warmup.md) — replaying the recent past so the day does not start cold
 - [Money simulator](money-simulator.md) — the funded book, the reserve, and real rupees
 - [Dashboard](dashboard.md) — reading the browser terminal
 - [Backtesting](backtesting.md) — execution model, cost model, reporting

@@ -206,6 +206,26 @@ renderer settings for one run. Keep the default loopback host unless
 you intentionally want the unauthenticated, read-only view reachable from a
 trusted network.
 
+### Run flags
+
+Not plugin configuration — they shape the session the launcher composes:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--offline` | off | Replay simulated ticks instead of the live feed |
+| `--timeframe` | `1` | Bar size in minutes |
+| `--speed` | `1.0` | Replay speed against the clock |
+| `--refresh` / `--nowcast` | `1.0` | Seconds between frames / projection refreshes, capped at 1 |
+| `--legs` / `--no-legs` | on | Chart the at-the-money call and put |
+| `--learn` / `--no-learn` | on | Update instrument models as candles close |
+| `--warmup` / `--no-warmup` | on | Replay recent bars into the research ledgers first |
+| `--warmup-bars` | `600` | Bars a cold-start warm-up replays per instrument |
+| `--workers` | from config | CPU workers (`-1` = all) |
+
+`--warmup-bars` only bounds a **cold** start: an instrument with a checkpoint
+replays just the bars that have appeared since it was last warmed. See
+[Warm-up](warmup.md).
+
 ---
 
 ## Environment variables
