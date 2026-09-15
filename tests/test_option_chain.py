@@ -343,11 +343,23 @@ def test_leg_premium_decays_when_the_index_does_not_move() -> None:
     assert late > early
 
 
-def test_leg_premium_tracks_the_index_direction(bars, source) -> None:
-    """A call's premium must rise when the index does, bar for bar."""
+def test_leg_premium_tracks_the_index_direction(bars) -> None:
+    """A call's premium must rise when the index does, bar for bar.
+
+    Priced at the money and with a fixed expiry a few days out, on purpose. Using
+    the source's own expiry made this depend on the calendar: run on a Tuesday,
+    the window sat minutes from expiry, a strike 400 points away was eight
+    standard deviations out of the money, and every bar but one carried no
+    premium at all. The test then measured the sign of a series of zeroes rather
+    than the thing it says it measures.
+    """
     window = bars.tail(40)
-    leg = leg_bars(window, 24_150.0, CALL, source.expiry())
+    strike = round(float(window["close"].iloc[0]) / 50.0) * 50.0
+    expiry = window.index[-1].to_pydatetime() + timedelta(days=2)
+
+    leg = leg_bars(window, strike, CALL, expiry)
     common = leg.index.intersection(window.index)
+    assert len(common) == len(window), "every bar must carry a premium to compare"
     index_move = window.loc[common, "close"].diff().dropna()
     premium_move = leg.loc[common, "close"].diff().dropna()
     agree = (np.sign(index_move) == np.sign(premium_move)).mean()

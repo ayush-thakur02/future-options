@@ -8,7 +8,7 @@ a shared projection that quietly ties two instruments together.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -34,7 +34,12 @@ SPOT = 24_000.0
 
 @pytest.fixture(scope="module")
 def bars():
-    return generate_candles(days=3, seed=29)
+    # Pinned to a Thursday, so the next weekly expiry is five days out. Generated
+    # data ends on the day it is generated, and on a Tuesday that put the whole
+    # history minutes from expiry: the at-the-money legs were priced with under an
+    # hour of life, where a premium is almost entirely intrinsic and a leg's
+    # direction stops being a function of the index.
+    return generate_candles(days=3, seed=29, end=date(2026, 9, 10))
 
 
 @pytest.fixture(scope="module")

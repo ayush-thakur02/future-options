@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.calendar import IST
+from core.calendar import IST, TradingCalendar
 from core.settings import Settings, UpstoxCredentials
 from core.types import ForecastCandle, Tick
 from kernel import Kernel
@@ -212,6 +212,18 @@ def test_engine_shows_every_plugin_rule_and_disables_index_volume_claims(history
     engine.close()
 
 
+@pytest.mark.skipif(
+    not TradingCalendar().is_open(),
+    reason=(
+        "Drives a live engine off the wall clock, so it can only assert anything "
+        "between 09:15 and 15:30. Projections are stamped from the tick, the tick "
+        "must be within 90s of now to survive the staleness guard, and a live "
+        "engine drops any projection outside the session — three clocks that only "
+        "agree while the market is open. The session filter is correct; a tape "
+        "written overnight is not a session. Running this at 20:00 asserted that "
+        "the engine was broken when it was closed."
+    ),
+)
 def test_live_engine_scores_before_new_forecasts_and_trains_on_closed_bars(history, tmp_path):
     settings = Settings(model_dir=tmp_path / "models", data_dir=tmp_path / "data")
     warm = history.iloc[:200].copy()
