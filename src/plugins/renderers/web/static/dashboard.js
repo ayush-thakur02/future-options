@@ -924,10 +924,218 @@ function renderSystem(payload) {
   byId("system-state").replaceChildren(...items);
 }
 
+function rupee(value, digits = 0) {
+  const parsed = finite(value);
+  if (parsed === null) return "—";
+  return `₹${parsed.toLocaleString("en-IN", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`;
+}
+
+function signedRupee(value, digits = 0) {
+  const parsed = finite(value);
+  if (parsed === null) return "—";
+  const body = Math.abs(parsed).toLocaleString("en-IN", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${parsed >= 0 ? "+" : "−"}₹${body}`;
+}
+
+function moneyTone(value) {
+  const parsed = finite(value);
+  if (parsed === null || parsed === 0) return "hold";
+  return parsed > 0 ? "up" : "down";
+}
+
+function renderMoneySummary(money) {
+  const reserve = money.reserve || {};
+  const policy = money.policy || {};
+  const net = finite(money.net_pnl) || 0;
+  const items = [
+    metric("paper equity", rupee(money.equity), `${rupee(money.cash)} cash · ${signedRupee(money.unrealized)} open`, "cyan"),
+    metric("net result", signedRupee(net), `on ${rupee(money.capital_committed)} committed`, moneyTone(net)),
+    metric(
+      "reserve left",
+      rupee(reserve.remaining),
+      `${rupee(reserve.deployed)} drawn · ${reserve.calls || 0} top-up${reserve.calls === 1 ? "" : "s"}`,
+      reserve.calls ? "hold" : "",
+    ),
+    metric(
+      "lot size",
+      money.lots ? `${money.lots} units` : "—",
+      `one lot per leg · decides every ${fmt(policy.decision_seconds, 0)}s`,
+      "prediction",
+    ),
+  ];
+  byId("money-summary").replaceChildren(...items);
+}
+
+function moneyViewLine(wallet, policy) {
+  const view = wallet.view;
+  const line = node("div", "money-view inspectable");
+  if (!view) {
+    line.append(node("span", "muted", "THE VIEW IS WARMING — NO BLENDED READING YET"));
+    return line;
+  }
+  const tone = moneyTone(view.edge_bps);
+  line.append(node("span", "cyan", `VIEW ${signed(view.view, 2)}`));
+  line.append(node("span", "", `EDGE ${signed(view.edge_bps, 1, "bp")} · ${signedRupee(view.edge_rupees)}`));
+  line.append(node("span", "muted", `PROJECTS ${fmt(view.expected_move_bps, 1)}bp vs NEEDS ${fmt(view.required_move_bps, 1)}bp`));
+  line.append(node("span", tone, `${view.agreement || "0/0"} AGREE`));
+  line.title = "Click to inspect which source carried the view";
+  line.addEventListener("click", () => showMoneyCalculation(wallet, policy));
+  return line;
+}
+
+function renderMoneyWallets(money) {
+  const root = byId("money-wallets");
+  const wallets = money.wallets || [];
+  const policy = money.policy || {};
+  const cards = wallets.map((wallet) => {
+    const position = wallet.position;
+    const pnl = finite(wallet.total_pnl) || 0;
+    const card = node("article", `money-card tone-${moneyTone(pnl)}`);
+
+    const head = node("div", "money-head");
+    const identity = node("div");
+    identity.append(node("div", "money-leg", wallet.label));
+    identity.append(node("div", "money-sub", `opening ${rupee(wallet.opening)} · ${wallet.trades || 0} trades`));
+    const equity = node("div", "money-equity");
+    equity.append(node("div", `money-value ${moneyTone(pnl)}`, rupee(wallet.equity)));
+    equity.append(node("div", `money-delta ${moneyTone(pnl)}`, `${signedRupee(pnl)} · ${signed(wallet.return_pct, 2, "%")}`));
+    head.append(identity, equity);
+
+    const lot = node("div", "money-lot");
+    if (position) {
+      lot.append(tag(position.side));
+      lot.append(node("span", "money-detail", `${position.units} × ${fmt(position.entry_price)} → ${fmt(position.price)}`));
+      lot.append(node("span", `money-detail ${moneyTone(position.unrealized)}`, `${signedRupee(position.unrealized)} open`));
+      lot.append(node("span", "money-detail muted", `stop ${fmt(position.stop_price)} · target ${fmt(position.target_price)}`));
+    } else {
+      lot.append(tag("FLAT"));
+      lot.append(node("span", "money-detail muted", wallet.unrealized ? signedRupee(wallet.unrealized) : "no open lot"));
+    }
+
+    const stats = node("div", "money-stats");
+    stats.append(
+      readout("WIN RATE", wallet.trades ? `${percent(wallet.win_rate, 0)} · ${wallet.wins}/${wallet.trades}` : "—"),
+      readout("COSTS PAID", rupee(wallet.costs_paid), wallet.costs_paid > Math.abs(wallet.total_pnl) ? "down" : ""),
+      readout("RESERVE USED", rupee(wallet.reserve_drawn), wallet.reserve_drawn > 0 ? "hold" : ""),
+      readout("DRAWDOWN", rupee(wallet.drawdown)),
+    );
+
+    card.append(head, lot, moneyViewLine(wallet, policy), stats);
+    return card;
+  });
+  root.replaceChildren(...cards);
+  if (!cards.length) root.append(node("div", "empty", "THE PAPER BOOK IS WARMING"));
+}
+
+function renderMoney(payload) {
+  const money = payload.simulation || {};
+  if (!money.wallets) {
+    // A market-only frame has no board, so there is no leg to fund. Say so
+    // rather than rendering three empty wallets.
+    byId("money-summary").replaceChildren();
+    byId("money-wallets").replaceChildren(node("div", "empty", "MONEY SIMULATOR NEEDS THE INDEX / CALL / PUT BOARD"));
+    byId("money-decisions").replaceChildren();
+    byId("money-trades").replaceChildren();
+    return;
+  }
+  renderMoneySummary(money);
+  renderMoneyWallets(money);
+
+  const decisions = (money.decisions || []).slice(0, 30).map((decision) => [
+    timeOnly(decision.at),
+    decision.leg,
+    tag(decision.action),
+    decision.pnl ? signedRupee(decision.pnl) : "—",
+    decision.reason,
+  ]);
+  byId("money-decisions").replaceChildren(
+    table(["time", "leg", "action", "result", "why"], decisions, ["cyan", "cyan", "", "", "muted"]),
+  );
+
+  const trades = (money.trades || []).slice(0, 30).map((trade) => [
+    timeOnly(trade.entry_ts),
+    trade.leg,
+    trade.side,
+    trade.units,
+    fmt(trade.entry_price),
+    fmt(trade.exit_price),
+    `${signedRupee(trade.gross)}`,
+    `${rupee(trade.costs)}`,
+    signedRupee(trade.net),
+    trade.exit_reason,
+  ]);
+  byId("money-trades").replaceChildren(
+    table(
+      ["entry", "leg", "side", "units", "in", "out", "gross", "costs", "net", "exit"],
+      trades,
+      ["cyan", "cyan", "", "", "", "", "", "muted", "", "muted"],
+    ),
+  );
+}
+
+function showMoneyCalculation(wallet, policy = {}) {
+  const view = wallet.view || {};
+  const position = wallet.position;
+  const sources = (view.sources || []).map((item) => ({
+    source: item.source,
+    value: finite(item.value) || 0,
+    weight: finite(item.weight) || 0,
+    weighted: finite(item.weighted) || 0,
+    detail: item.detail || "",
+  }));
+  const sourceList = node("ul", "calculation-list");
+  sources.forEach((item) => {
+    sourceList.append(
+      node(
+        "li",
+        "",
+        `${item.source}: value ${signed(item.value, 3)} × weight ${fmt(item.weight, 2)} = ${signed(item.weighted, 3)} — ${item.detail}`,
+      ),
+    );
+  });
+  const weightTotal = sources.filter((item) => item.weight > 0).reduce((total, item) => total + item.weight, 0);
+  showCalculation({
+    kicker: "MONEY SIMULATOR CALCULATION",
+    title: `${wallet.label} — the view behind the lot`,
+    lead: "Every source the platform computes is blended into one signed view for this leg, then tested against what the round trip actually costs. The blend is renormalised over the sources that are present, so an untrained model does not dilute the rest.",
+    metrics: [
+      ["BLENDED VIEW", signed(view.view, 3), moneyTone(view.view)],
+      ["EDGE / LOT", `${signed(view.edge_bps, 1, "bp")} · ${signedRupee(view.edge_rupees)}`, moneyTone(view.edge_bps)],
+      ["PROJECTED MOVE", `${fmt(view.expected_move_bps, 1)}bp`, "prediction"],
+      ["ROUND TRIP COST", `${fmt(view.required_move_bps, 1)}bp`, "muted"],
+      ["OPEN LOT", position ? `${position.side} ${position.units} @ ${fmt(position.entry_price)}` : "FLAT", position ? directionClass(position.side) : "hold"],
+    ],
+    formula: [
+      "view = Σ(sourceᵢ × weightᵢ) ÷ Σ(weightᵢ)   over the sources present",
+      `expected_move_bps = ${fmt(view.expected_move_bps, 2)}   (the projection, restated in this leg's own price)`,
+      `required_move_bps  = ${fmt(view.required_move_bps, 2)}   (round trip + the decay paid while holding)`,
+      `edge_bps = |expected| − required = ${signed(view.edge_bps, 2)}`,
+      `an entry needs |view| ≥ ${fmt(policy.entry_view, 2)} and edge ≥ ${fmt(policy.min_edge_bps, 2)}bp`,
+      `positions are one lot of ${policy.lot_size || "—"} units; stops sit at ${fmt(policy.stop_atr, 2)}×ATR and targets at ${fmt(policy.target_atr, 2)}×ATR`,
+    ].join("\n"),
+    details: [
+      sources.length
+        ? `Sources present: ${sources.length} · total weight ${fmt(weightTotal, 2)}.`
+        : "No source has produced a reading yet.",
+      `Walking rupees: equity ${rupee(wallet.equity)}, cash ${rupee(wallet.cash)}, realised ${signedRupee(wallet.realized)}, costs paid ${rupee(wallet.costs_paid)}.`,
+      `Reserve drawn ${rupee(wallet.reserve_drawn)} across ${wallet.top_ups || 0} top-up(s); repaid from profits before they count as this leg's own.`,
+    ],
+  });
+  const content = byId("calculation-content");
+  if (sources.length) content.append(calculationSection("SOURCE CONTRIBUTIONS", sourceList));
+}
+
 function render(payload) {
   latest = payload;
   renderOverview(payload);
   renderDecisions(payload);
+  renderMoney(payload);
   renderLegs(payload);
   renderAi(payload);
   renderPredictions(payload);

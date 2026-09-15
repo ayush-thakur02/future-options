@@ -60,7 +60,7 @@ main { width: min(1920px, 100%); margin: 0 auto; padding: 18px clamp(10px, 1.7vw
 .metric { min-height: 82px; padding: 12px 14px; position: relative; overflow: hidden; }
 .metric::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--line-hot); }
 .metric .label { color: var(--muted); font-size: 9px; letter-spacing: .13em; text-transform: uppercase; }
-.metric .value { margin-top: 9px; color: #111827; font-size: clamp(15px, 1.5vw, 22px); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric .value { margin-top: 9px; color: #111827; font-size: clamp(12px, 1.1vw, 15px); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric .sub { margin-top: 5px; color: var(--muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .decision-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -71,7 +71,7 @@ main { width: min(1920px, 100%); margin: 0 auto; padding: 18px clamp(10px, 1.7vw
 .decision-instrument { color: var(--cyan); font-size: 13px; font-weight: 800; letter-spacing: .08em; }
 .decision-symbol { margin-top: 4px; color: var(--muted); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .decision-action { min-width: 150px; padding: 8px 10px; border: 2px solid currentColor; background: color-mix(in srgb, currentColor 7%, #fff); text-align: center; }
-.decision-action strong { display: block; color: inherit; font-size: 18px; font-weight: 900; letter-spacing: .12em; }
+.decision-action strong { display: block; color: inherit; font-size: 12px; font-weight: 900; letter-spacing: .12em; }
 .decision-action small { display: block; margin-top: 5px; color: currentColor; font-size: 7px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
 .decision-context { padding: 7px 13px; border-bottom: 1px solid var(--line); background: #fafbfd; color: var(--cyan); font-size: 8px; font-weight: 700; letter-spacing: .07em; }
 .decision-summary { min-height: 54px; padding: 10px 13px; color: #344256; font-size: 10px; line-height: 1.5; }
@@ -163,6 +163,29 @@ tbody tr.inspectable:hover { background: rgba(36, 87, 214, .075); }
 .indicator strong, .system-item strong { display: block; margin-top: 6px; color: #17202b; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 
 .search-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 8px; }
+
+.money-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+.money-wallets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.money-card { min-width: 0; border: 1px solid var(--line); border-left: 2px solid var(--line-hot); background: #fff; box-shadow: 0 1px 2px rgba(31, 45, 61, .06); }
+.money-card.tone-up { border-left-color: var(--green); }
+.money-card.tone-down { border-left-color: var(--red); }
+.money-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 13px; border-bottom: 1px solid var(--line); background: #fafbfd; }
+.money-leg { color: var(--cyan); font-size: 13px; font-weight: 800; letter-spacing: .09em; }
+.money-sub { margin-top: 4px; color: var(--muted); font-size: 8px; }
+.money-equity { text-align: right; }
+.money-value { font-size: 17px; font-weight: 800; letter-spacing: .02em; }
+.money-delta { margin-top: 4px; font-size: 9px; font-weight: 700; }
+.money-lot { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 9px 13px; border-bottom: 1px solid var(--line); }
+.money-detail { color: #344256; font-size: 9px; }
+.money-view { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 9px 13px; border-bottom: 1px solid var(--line); background: #f7f9fc; font-size: 9px; }
+.money-view.inspectable { cursor: pointer; }
+.money-view.inspectable:hover { background: rgba(36, 87, 214, .06); }
+.money-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.money-stats .readout { padding: 9px 10px; border-right: 1px solid #e8edf3; }
+.money-stats .readout:last-child { border-right: 0; }
+.money-tables { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.money-heading { margin-bottom: 7px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .1em; }
+
 input[type="search"] { width: min(250px, 26vw); padding: 7px 9px; border: 1px solid var(--line-hot); outline: none; background: #fff; color: var(--green); font: 10px var(--mono); }
 input[type="search"]:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(8, 122, 79, .12); }
 
@@ -210,6 +233,7 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .metric-grid { grid-template-columns: repeat(3, 1fr); }
   .leg-grid { grid-template-columns: 1fr; }
   .decision-grid { grid-template-columns: 1fr; }
+  .money-wallets { grid-template-columns: 1fr; }
   .chart-wrap { height: 320px; }
 }
 
@@ -225,11 +249,16 @@ footer { display: flex; justify-content: space-between; align-items: center; gap
   .strategy-summary-item:nth-child(2n) { border-right: 0; }
   .calculation-metrics { grid-template-columns: repeat(2, 1fr); }
   .calculation-metric:nth-child(2) { border-right: 0; }
+  .money-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .money-tables { grid-template-columns: 1fr; }
+  .money-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .money-stats .readout:nth-child(2n) { border-right: 0; }
 }
 
 @media (max-width: 420px) {
   .metric-grid { grid-template-columns: 1fr; }
   .indicator-grid, .system-grid { grid-template-columns: 1fr; }
+  .money-summary, .money-stats { grid-template-columns: 1fr; }
   th, td { padding: 7px; }
   .decision-head { flex-direction: column; }
   .decision-action { width: 100%; min-width: 0; }
